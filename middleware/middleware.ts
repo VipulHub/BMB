@@ -229,7 +229,7 @@ async function checkToken(
         let token: string | undefined;
         let authType: "SUPABASE" | "SESSION" | null = null;
          console.log(request.headers,'adadsad');
-         const sessionId = request.cookies?.["SESSION_ID"] || request.headers['x-session-id']
+         const sessionId = request.cookies?.["SESSION_ID"] || request.body.sessionId
         // 2️⃣ Fallback to cookie-based guest session
         if (!token && sessionId) {
             token = request.cookies["SESSION_ID"];
