@@ -17,7 +17,8 @@ async function createOrder(
 ): Promise<Response<CreateOrderResponse>> {
   try {
     const { customer, address, payment_method, cart, userId } = req.body;
-
+     console.log(req.body);
+     
     /* -----------------------------
        Fetch user safely
     ----------------------------- */
