@@ -46,7 +46,8 @@ const corsOptions: cors.CorsOptions = {
     allowedHeaders: [
         "Content-Type",
         "Authorization",
-        "ip"
+        "ip",
+        'x-session-id'
     ],
 };
 

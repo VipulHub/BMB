@@ -220,6 +220,7 @@ async function getDashboard(
         cart: cart ?? { items: [], product_count: 0, total_price: 0 },
         coupons,
       },
+      sessionId
     });
   } catch (e) {
     const error = e as AppError;

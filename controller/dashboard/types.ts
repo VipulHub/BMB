@@ -88,4 +88,5 @@ export type GetDashboardResponse = {
   errorCode: "NO_ERROR" | "Server_Error";
   data?: DashboardData;
   error?: any;
+  sessionId?:string
 };
