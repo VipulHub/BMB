@@ -234,7 +234,7 @@ async function checkToken(
          const sessionId = request.cookies?.["SESSION_ID"] || request.body.sessionId
         // 2️⃣ Fallback to cookie-based guest session
         if (!token && sessionId) {
-            token = request.cookies["SESSION_ID"];
+            token = sessionId;
             authType = "SESSION";
         }
 

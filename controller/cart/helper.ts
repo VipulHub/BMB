@@ -14,7 +14,7 @@ export async function addToCart(
   try {
     const { product_id, quantity = 1, userId } = req.body;
     const sessionId =
-      req.cookies.SESSION_ID ?? (await ensureGuestSession(req, res));
+      req.body.sessionId ?? (await ensureGuestSession(req, res));
 
     // Fetch price once
     const { data: product } = await supabase
@@ -96,9 +96,7 @@ export async function removeFromCart(
   res: Response<CartAPIResponse>
 ) {
   try {
-    const { product_id, userId, cartId } = req.body;
-    const sessionId = req.cookies.SESSION_ID;
-
+    const { product_id, userId, cartId,sessionId } = req.body;
     /* ===============================
        FETCH CART
     ================================ */

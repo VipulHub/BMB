@@ -2,10 +2,12 @@ export interface AddToCartRequest {
   product_id: string;
   quantity?: number;
   userId?: string | null;
+  sessionId:string;
 }
 
 export interface RemoveFromCartRequest {
   product_id: string;
+  sessionId:string;
   userId?: string | null;
   cartId?: string | null;
 }
