@@ -20,7 +20,8 @@ export type CartSummary = {
   discount: number;
   shipping: number;
   total: number;
-  couponId?: string | null;
+  couponId?: string | null; // can be UUID
+  couponCode?: string | null; // fallback if couponId not provided
 };
 
 export type CreateOrderRequest = {

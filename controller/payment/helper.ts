@@ -17,8 +17,8 @@ async function createOrder(
 ): Promise<Response<CreateOrderResponse>> {
   try {
     const { customer, address, payment_method, cart, userId } = req.body;
-     console.log(req.body);
-     
+    console.log("Request body:", req.body);
+
     /* -----------------------------
        Fetch user safely
     ----------------------------- */
@@ -26,7 +26,7 @@ async function createOrder(
       .from("users")
       .select("*")
       .or(`id.eq.${userId},email.eq.${customer.email}`)
-      .limit(1); // ensures at most 1 row
+      .limit(1);
 
     if (userFetchError) throw userFetchError;
 
@@ -47,7 +47,7 @@ async function createOrder(
       if (userInsertError) throw userInsertError;
       user = newUser;
     } else {
-      // Update name & address only, NOT email
+      // Update name & address only
       const { error: userUpdateError } = await supabase
         .from("users")
         .update({
@@ -75,12 +75,14 @@ async function createOrder(
     ----------------------------- */
     const { data: orderData, error: orderError } = await supabase
       .from("orders")
-      .insert([{
-        user_id: user.id,
-        status: "pending",
-        total_amount: totalAmount,
-        payment_method_id: null,
-      }])
+      .insert([
+        {
+          user_id: user.id,
+          status: "pending",
+          total_amount: totalAmount,
+          payment_method_id: null,
+        },
+      ])
       .select("*")
       .single();
 
@@ -91,27 +93,58 @@ async function createOrder(
     ----------------------------- */
     const { error: paymentError } = await supabase
       .from("order_payment_history")
-      .insert([{
-        order_id: orderData.id,
-        amount: totalAmount,
-        method_used: payment_method,
-        status: "initiated",
-      }]);
+      .insert([
+        {
+          order_id: orderData.id,
+          amount: totalAmount,
+          method_used: payment_method,
+          status: "initiated",
+        },
+      ]);
     if (paymentError) throw paymentError;
 
     /* -----------------------------
-       Deactivate coupon if any
+       Handle coupon safely
     ----------------------------- */
-    if (cart.couponId) {
-      const { error: couponError } = await supabase
-        .from("discount_coupons")
-        .update({ is_active: false })
-        .eq("id", cart.couponId);
-      if (couponError) throw couponError;
+    let appliedCouponId: string | null = null;
+
+    if (cart.couponId || cart.couponCode) {
+      let couponRow;
+
+      if (cart.couponId) {
+        // Try fetching by UUID
+        const { data, error } = await supabase
+          .from("discount_coupons")
+          .select("id")
+          .eq("id", cart.couponId)
+          .single();
+
+        if (!error && data) couponRow = data;
+      }
+
+      if (!couponRow && cart.couponCode) {
+        // Fetch by coupon code
+        const { data, error } = await supabase
+          .from("discount_coupons")
+          .select("id")
+          .eq("coupon_code", cart.couponCode)
+          .single();
+
+        if (!error && data) couponRow = data;
+      }
+
+      if (couponRow) {
+        appliedCouponId = couponRow.id;
+        const { error: couponError } = await supabase
+          .from("discount_coupons")
+          .update({ is_active: false })
+          .eq("id", couponRow.id);
+        if (couponError) throw couponError;
+      }
     }
 
     /* -----------------------------
-       Return response to frontend
+       Return response
     ----------------------------- */
     return res.status(200).json({
       errorCode: "NO_ERROR",
@@ -122,12 +155,11 @@ async function createOrder(
         currency: "INR",
         customer,
         address,
-        couponId: cart.couponId ?? null,
+        couponId: appliedCouponId,
       },
     });
-
   } catch (e) {
-    console.log(e);
+    console.log("CreateOrder error:", e);
     const error = e as AppError;
 
     const orgError = new AppError(
