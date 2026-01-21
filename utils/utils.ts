@@ -111,7 +111,7 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
 
         res.cookie(SESSION_COOKIE_NAME, sessionId, {
             httpOnly: true,
-            secure: true,
+            secure: false,
             sameSite: "lax",
             maxAge: SESSION_DURATION,
         });
