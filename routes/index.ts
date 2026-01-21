@@ -22,7 +22,7 @@ const routePaths: routeRegistration = [
     { routepath: "/user", router: userRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
     { routepath: "/product", router: productRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
     { routepath: "/dashboard", router: dashboardRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
-    { routepath: "/cart", router: cartRoutes, middlewares: [], authMiddleware: [apiHeartBeat, checkToken] },
+    { routepath: "/cart", router: cartRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
     { routepath: "/payment", router: paymentRoutes, middlewares: [], authMiddleware: [apiHeartBeat, checkToken] },
 ];
 
