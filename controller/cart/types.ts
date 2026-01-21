@@ -1,0 +1,34 @@
+export interface AddToCartRequest {
+  product_id: string;
+  quantity?: number;
+  userId?: string | null;
+}
+
+export interface RemoveFromCartRequest {
+  product_id: string;
+  userId?: string | null;
+  cartId?: string | null;
+}
+
+export interface CartItem {
+  product_id: string;
+  quantity: number;
+  price: number;
+  total_price: number;
+}
+
+export interface CartResponse {
+  id: string | null;
+  created_at: string | null;
+  user_id: string | null;
+  session_id?: string | null;
+  items: CartItem[];
+  product_count: number;
+  total_price: number;
+}
+
+export interface CartAPIResponse {
+  errorCode: string;
+  cart?: CartResponse;
+  error?: any;
+}
