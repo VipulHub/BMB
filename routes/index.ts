@@ -60,8 +60,8 @@ const registerApp = async (app: Express) => {
 
         centralLoggingEmitter();
         await createTables();
-        await seedDatabase()
-        //   await dropAllTables()
+        await seedDatabase();
+        //   await dropAllTables();
         // -----------------------------
         // GLOBAL CORS (MUST BE FIRST)
         app.use(cors(corsOptions));

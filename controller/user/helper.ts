@@ -123,6 +123,7 @@ async function otpAuth(
     });
 
     const { otp } = req.body;
+
     if (!otp) {
       return res.status(400).json({
         errorCode: "INVALID_REQUEST",
@@ -130,7 +131,7 @@ async function otpAuth(
       });
     }
 
-    // 1️⃣ Fetch latest OTP
+    /* ---------- FETCH OTP ---------- */
     const { data: otpRecord, error } = await supabase
       .from("user_otps")
       .select("*")
@@ -146,7 +147,7 @@ async function otpAuth(
       });
     }
 
-    // 2️⃣ Check expiry (🔥 CORRECT)
+    /* ---------- CHECK EXPIRY ---------- */
     const now = Date.now();
     const expiresAt = new Date(otpRecord.expires_at).getTime();
 
@@ -157,13 +158,65 @@ async function otpAuth(
       });
     }
 
-    // 3️⃣ Invalidate OTP after success
+    /* ---------- FETCH USER ---------- */
+    const { data: user, error: userError } = await supabase
+      .from("users")
+      .select("id, name, email")
+      .eq("id", otpRecord.user_id)
+      .single();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        errorCode: "USER_NOT_FOUND",
+        error: "User not found",
+      });
+    }
+
+    const [firstName, ...lastNameParts] = (user.name || "").split(" ");
+
+    /* ---------- FETCH DEFAULT ADDRESS ---------- */
+    const { data: address } = await supabase
+      .from("user_addresses")
+      .select(
+        `
+        address_line1,
+        address_line2,
+        postal_code,
+        city,
+        state,
+        country
+      `
+      )
+      .eq("user_id", otpRecord.user_id)
+      .eq("is_active", true)
+      .eq("is_default", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    /* ---------- DELETE OTP ---------- */
     await supabase.from("user_otps").delete().eq("id", otpRecord.id);
 
+    /* ---------- RESPONSE ---------- */
     return res.json({
       errorCode: "NO_ERROR",
       message: "OTP verified successfully",
       userId: otpRecord.user_id,
+      user: {
+        firstName: firstName || '',
+        lastName: lastNameParts.join(" ") || '',
+        email: user.email || '',
+      },
+      address: address
+        ? {
+          address: address.address_line1 || '',
+          locality: address.address_line2 || '',
+          pincode: address.postal_code || '',
+          city: address.city || '',
+          state: address.state || '',
+          country: address.country || '',
+        }
+        : {},
     });
   } catch (e: any) {
     console.error(e);
@@ -173,6 +226,7 @@ async function otpAuth(
     });
   }
 }
+
 
 /* ===============================
    SIGN OUT

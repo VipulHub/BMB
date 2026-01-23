@@ -35,13 +35,26 @@ type SignOutResponse = {
 interface OtpAuthRequest {
   otp: string;
 }
-
- interface OtpAuthResponse {
+interface OtpAuthResponse {
   errorCode: string;
   message?: string;
   userId?: string;
+  user?: {
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+  };
+  address?: {
+    address: string | null;
+    locality: string | null;
+    pincode: string | null;
+    city: string | null;
+    state: string | null;
+    country: string | null;
+  } | {};
   error?: any;
 }
+
 
 export type {
     User,
