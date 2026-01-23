@@ -1,6 +1,6 @@
 interface envConfigType {
     PORT: string,
-    ENV: string,
+    SYSTEM: string,
     SUPABASE_URL: string,
     SUPABASE_SERVICE_ROLE_KEY: string,
     app_base_path: string,
@@ -10,6 +10,9 @@ interface envConfigType {
     TWILIO_AUTH_TOKEN: string,
     RAZORPAY_KEY_SECRET: string,
     RAZORPAY_KEY_ID: string,
+    DELHIVERY_API_KEY: string,
+    LOCAL_DELHIVERY_URL: string,
+    PROD_DELHIVERY_URL: string
 }
 export type {
     envConfigType

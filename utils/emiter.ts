@@ -33,7 +33,7 @@ const toggleEmitter = (action: "on" | "off") => {
 
 const centralLoggingEmitter = async () => {
     try {
-        if (env.env !== 'production') {
+        if (env.SYSTEM !== 'production') {
             logger.info('🎯 Centeral Logger Initialize')
             toggleEmitter('on');
         }

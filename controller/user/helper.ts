@@ -59,7 +59,7 @@ async function login(
     let { data: user } = await supabase
       .from("users")
       .select("*")
-      .eq("email", number)
+      .eq("phone_number", number)
       .maybeSingle();
 
     // 2️⃣ Create user if not exists
@@ -67,8 +67,7 @@ async function login(
       const { data: newUser, error } = await supabase
         .from("users")
         .insert({
-          name: number,
-          email: number, // using email as phone
+          phone_number: number,
         })
         .select("*")
         .single();
@@ -193,7 +192,6 @@ async function otpAuth(
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-
     /* ---------- DELETE OTP ---------- */
     await supabase.from("user_otps").delete().eq("id", otpRecord.id);
 

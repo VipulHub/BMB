@@ -100,8 +100,8 @@ async function createTables() {
       create table if not exists users (
         id uuid primary key default gen_random_uuid(),
         created_at timestamp default now(),
-        name text not null,
-        email text unique not null,
+        name text,
+        email text unique,
         type user_role not null default 'user',
         phone_number text,
         address text,
@@ -157,16 +157,23 @@ async function createTables() {
         brand text
       );
 
-      create table if not exists orders (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamp default now(),
-        user_id uuid references users(id) on delete cascade,
-        status text default 'pending',
-        total_amount numeric(10,2),
-        product_ids uuid[] default '{}',
-        product_count int default 0,
-        payment_method_id uuid references payment_methods(id)
-      );
+      CREATE TABLE IF NOT EXISTS orders (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),      -- internal order ID
+    created_at timestamp DEFAULT now(),
+    user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+    status text DEFAULT 'pending',
+    total_amount numeric(10,2),
+    product_ids uuid[] DEFAULT '{}',
+    product_count int DEFAULT 0,
+
+    -- Internal payment method (optional)
+    payment_method_id uuid REFERENCES payment_methods(id),
+
+    -- Razorpay integration columns
+    razorpay_order_id text,     -- stores Razorpay order ID
+    razorpay_payment_id text    -- stores Razorpay payment ID
+);
+
 
       create table if not exists order_payment_history (
         id uuid primary key default gen_random_uuid(),
