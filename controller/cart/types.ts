@@ -1,19 +1,22 @@
 export interface AddToCartRequest {
   product_id: string;
+  size: string;
   quantity?: number;
   userId?: string | null;
-  sessionId:string;
+  sessionId: string;
 }
 
 export interface RemoveFromCartRequest {
   product_id: string;
-  sessionId:string;
+  size: string;
+  sessionId: string;
   userId?: string | null;
   cartId?: string | null;
 }
 
 export interface CartItem {
   product_id: string;
+  size?: string;
   quantity: number;
   price: number;
   total_price: number;
