@@ -59,10 +59,11 @@ const registerApp = async (app: Express) => {
         const port = env.port;
 
         centralLoggingEmitter();
-        await createTables();
-        await seedDatabase();
-        //   await dropAllTables();
-        // -----------------------------
+        // await dropAllTables();
+        // await createTables();
+        // await new Promise(res => setTimeout(res, 2000)); // wait 2s
+        // await seedDatabase();
+        // // -----------------------------
         // GLOBAL CORS (MUST BE FIRST)
         app.use(cors(corsOptions));
         app.use(cookieParser())

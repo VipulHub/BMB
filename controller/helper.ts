@@ -2,15 +2,20 @@ import axios from "axios";
 import qs from "qs";
 import { env } from "../config/envConfig.ts";
 
+/* ================= ENV ================= */
+
 const {
   LOCAL_DELHIVERY_URL,
   PROD_DELHIVERY_URL,
+  LOCAL_DELHIVERY_TRACK_URL,
+  PROD_DELHIVERY_TRACK_URL,
   SYSTEM,
   DELHIVERY_API_KEY,
 } = env;
 
+/* ================= TYPES ================= */
+
 export interface ShipmentData {
-  // Mandatory fields
   name: string;
   add: string;
   pin: string;
@@ -18,92 +23,118 @@ export interface ShipmentData {
   order: string;
   payment_mode: "Prepaid" | "COD";
   country: string;
-
-  // Optional fields
-  total_amount?: number;
-  cod_amount?: number;
+  total_amount: number;
 }
 
-const sanitize = (value: string) =>
-  value.replace(/[&#%;\\]/g, "").trim();
+export interface CreatedShipmentResult {
+  waybill: string;
+  order_ref: string;
+  status: string;
+  sort_code?: string;
+  raw: any;
+}
 
-export async function createDelhiveryShipment(shipment: ShipmentData) {
-  const url = SYSTEM === "LOCAL" ? LOCAL_DELHIVERY_URL : PROD_DELHIVERY_URL;
+/* ================= HELPERS ================= */
 
-  // 1️⃣ VALIDATION OF MANDATORY FIELDS
-  if (!shipment.name || !shipment.phone || !shipment.pin || !shipment.add || !shipment.order || !shipment.country) {
-    throw new Error("Missing mandatory consignee fields");
-  }
+const sanitize = (v: string) =>
+  v.replace(/[&#%;\\]/g, "").trim();
 
-  if (shipment.payment_mode === "Prepaid" && (!shipment.total_amount || shipment.total_amount <= 0)) {
-    throw new Error("Total amount must be greater than 0 for prepaid orders");
-  }
+/* ================= CREATE SHIPMENT ================= */
 
-  // 2️⃣ CLEAN / SANITIZE VALUES
+export async function createDelhiveryShipment(
+  shipment: ShipmentData
+): Promise<CreatedShipmentResult> {
+  const url =
+    SYSTEM === "LOCAL" ? LOCAL_DELHIVERY_URL : PROD_DELHIVERY_URL;
+
   const cleanPhone = shipment.phone.replace(/\D/g, "").slice(-10);
-  const cleanAddress = sanitize(shipment.add.replace(/[\/]/g, ""));
-  const cleanOrder = sanitize(shipment.order);
 
-  // 3️⃣ BUILD MINIMAL PAYLOAD
-  const shipmentPayload: any ={
-  "pickup_location": { "name": "Dasam Commerce Private Limited" },
-  "shipments": [
-    {
-      "name": "Vipul Singh",
-      "add": "Chandigarh sector 32c 200010 adsasdasdads",
-      "pin": "160030",
-      "phone": "8888888888",
-      "order": "Order_53c4b229-1621-47ed-ad6f-8d3e95ed2388",
-      "payment_mode": "COD",
-      "country": "India",
-      "cod_amount": 1124,
-      "total_amount": 1124,
-      "city": "Chandigarh",
-      "state": "Punjab",
-      "weight": "500",
-      "shipping_mode": "Surface",
-      "products_desc": "Order Items"
-    }
-  ]
-}
+  const payload = {
+    pickup_location: { name: "Dasam Commerce Private Limited" },
+    shipments: [
+      {
+        name: sanitize(shipment.name),
+        add: sanitize(shipment.add.replace(/[\/]/g, "")),
+        pin: shipment.pin,
+        phone: cleanPhone,
+        country: shipment.country,
+        order: sanitize(shipment.order).slice(0, 45),
 
+        payment_mode: shipment.payment_mode,
+        total_amount: shipment.total_amount,
+        cod_amount:
+          shipment.payment_mode === "COD"
+            ? shipment.total_amount
+            : 0,
 
-  if (shipment.payment_mode === "Prepaid") {
-    shipmentPayload.total_amount = shipment.total_amount;
-  }
+        shipping_mode: "Surface",
+        weight: "500",
+        quantity: "1",
+        products_desc: "General Merchandise",
+      },
+    ],
+  };
 
-  if (shipment.payment_mode === "COD") {
-    shipmentPayload.cod_amount = shipment.cod_amount ?? shipment.total_amount;
-  }
-  console.log("📦 Delhivery Payload:", JSON.stringify(shipmentPayload, null, 2));
-
-  // 5️⃣ FORM-ENCODED REQUEST
   const body = qs.stringify({
     format: "json",
-    data: JSON.stringify(shipmentPayload),
+    data: JSON.stringify(payload),
   });
 
-  try {
-    const response = await axios.post(url, body, {
-      headers: {
-        Authorization: `Token ${DELHIVERY_API_KEY}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    });
+  const res = await axios.post(url, body, {
+    headers: {
+      Authorization: `Token ${DELHIVERY_API_KEY}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  });
 
-    console.log("✅ Delhivery Response:", response.data);
-
-    if (response.data?.error === true || response.data?.success === false) {
-      throw new Error(
-        response.data?.rmk ||
-        response.data?.packages?.[0]?.remarks?.[0] ||
-        "Delhivery shipment failed"
-      );
-    }
-
-    return response.data;
-  } catch (err: any) {
-    console.error("❌ Delhivery shipment creation error:", err?.response?.data || err.message);
-    throw err;
+  const pkg = res.data?.packages?.[0];
+  if (!pkg?.waybill) {
+    throw new Error(
+      pkg?.remarks?.[0] || "Delhivery shipment creation failed"
+    );
   }
+
+  return {
+    waybill: pkg.waybill,
+    order_ref: pkg.order,
+    status: pkg.status ?? "created",
+    sort_code: pkg.sort_code,
+    raw: res.data,
+  };
 }
+
+/* ================= TRACK SHIPMENT ================= */
+
+export async function getDelhiveryShipmentStatus({
+  waybill,
+}: {
+  waybill: string;
+}) {
+  const url =
+    SYSTEM === "LOCAL"
+      ? LOCAL_DELHIVERY_TRACK_URL
+      : PROD_DELHIVERY_TRACK_URL;
+
+  const res = await axios.get(url, {
+    params: { waybill }, // ✅ ONLY WAYBILL
+    headers: {
+      Authorization: `Token ${DELHIVERY_API_KEY}`,
+    },
+  });
+
+  console.log("DELHIVERY TRACK RAW:", res.data);
+
+  const shipment =
+    res.data?.ShipmentData?.[0]?.Shipment;
+
+  if (!shipment) {
+    throw new Error("No shipment data from Delhivery");
+  }
+
+  return shipment;
+}
+
+export default {
+  createDelhiveryShipment,
+  getDelhiveryShipmentStatus,
+};

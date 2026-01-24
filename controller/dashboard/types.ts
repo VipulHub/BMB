@@ -7,11 +7,16 @@ export type Product = {
   user_id: string;
   name: string;
   description: string | null;
-  price: number;
   stock: number;
   product_type: string | null;
   image_urls: string[];
+  sizes?: string[];
+  size_prices?: Record<string, number>;        // map of size -> price
+  discounted_prices?: Record<string, number>;  // map of size -> discounted price
+  price?: number; // optional if you want a default
+  priority:number
 };
+
 
 /* ===============================
    BLOG
