@@ -111,9 +111,10 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
 
         res.cookie(SESSION_COOKIE_NAME, sessionId, {
             httpOnly: true,
-            secure: false,
-            sameSite: "lax",
+            secure: true,          // ✅ REQUIRED
+            sameSite: "none",      // ✅ REQUIRED for Firebase
             maxAge: SESSION_DURATION,
+            domain: ".bmbstore.in" // ✅ VERY IMPORTANT
         });
 
         // Optional: create empty cart in DB for new session
@@ -128,37 +129,37 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
 }
 
 export function normalizeCart(items: CartItem[]) {
-  let product_count = 0;
-  let total_price = 0;
+    let product_count = 0;
+    let total_price = 0;
 
-  const normalized = items.map(item => {
-    const itemTotal = item.quantity * item.price;
-    product_count += item.quantity;
-    total_price += itemTotal;
+    const normalized = items.map(item => {
+        const itemTotal = item.quantity * item.price;
+        product_count += item.quantity;
+        total_price += itemTotal;
+
+        return {
+            ...item,
+            total_price: itemTotal
+        };
+    });
 
     return {
-      ...item,
-      total_price: itemTotal
+        items: normalized,
+        product_count,
+        total_price
     };
-  });
-
-  return {
-    items: normalized,
-    product_count,
-    total_price
-  };
 }
 
 export function emptyCart(userId?: string | null, sessionId?: string | null) {
-  return {
-    id: null,
-    created_at: null,
-    user_id: userId ?? null,
-    session_id: sessionId ?? null,
-    items: [],
-    product_count: 0,
-    total_price: 0
-  };
+    return {
+        id: null,
+        created_at: null,
+        user_id: userId ?? null,
+        session_id: sessionId ?? null,
+        items: [],
+        product_count: 0,
+        total_price: 0
+    };
 }
 
 function generateOTP(length: number = 6): string {
