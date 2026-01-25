@@ -1,4 +1,6 @@
-// ================= DELHIVERY HELPER =================
+/* =========================================================
+   delhivery.service.ts
+========================================================= */
 
 import axios from "axios";
 import qs from "qs";
@@ -26,8 +28,6 @@ export interface ShipmentData {
   payment_mode: "Prepaid" | "COD";
   country: string;
   total_amount: number;
-  city?: string;
-  state?: string;
 }
 
 export interface CreatedShipmentResult {
@@ -40,123 +40,109 @@ export interface CreatedShipmentResult {
 
 /* ================= HELPERS ================= */
 
-const sanitize = (v: string) => v.replace(/[&#%;\\]/g, "").trim();
+const sanitize = (v: string) =>
+  v.replace(/[&#%;\\]/g, "").trim();
 
 /* ================= CREATE SHIPMENT ================= */
 
 export async function createDelhiveryShipment(
   shipment: ShipmentData
 ): Promise<CreatedShipmentResult> {
-  try {
-    if (!shipment.name || !shipment.add || !shipment.pin || !shipment.phone) {
-      throw new Error("Missing mandatory shipment fields");
-    }
+  const url =
+    SYSTEM === "LOCAL" ? LOCAL_DELHIVERY_URL : PROD_DELHIVERY_URL;
 
-    const url = SYSTEM === "LOCAL" ? LOCAL_DELHIVERY_URL : PROD_DELHIVERY_URL;
+  const cleanPhone = shipment.phone.replace(/\D/g, "").slice(-10);
 
-    const cleanPhone = shipment.phone.replace(/\D/g, "").slice(-10);
-    if (cleanPhone.length !== 10) {
-      throw new Error("Invalid phone number for Delhivery");
-    }
+  const payload = {
+    pickup_location: {
+      name: "Dasam Commerce Private Limited",
+    },
+    shipments: [
+      {
+        name: sanitize(shipment.name),
+        add: sanitize(shipment.add.replace(/[\/]/g, "")),
+        pin: shipment.pin,
+        phone: cleanPhone,
+        country: shipment.country,
+        order: sanitize(shipment.order).slice(0, 45),
 
-    const today = new Date();
-    const dateStr = today.toISOString().split("T")[0]; // YYYY-MM-DD
+        payment_mode: shipment.payment_mode,
+        total_amount: shipment.total_amount,
+        cod_amount:
+          shipment.payment_mode === "COD"
+            ? shipment.total_amount
+            : 0,
 
-    const payload = {
-      pickup_location: {
-        name: "Dasam Commerce Private Limited", // 🔥 Exact warehouse name from Delhivery dashboard
+        shipping_mode: "Surface",
+        weight: "500",
+        quantity: "1",
+        products_desc: "General Merchandise",
+
+        seller_name: "Dasam Commerce Private Limited",
+        seller_add: "Warehouse Address",
+        order_date: new Date().toISOString().split("T")[0],
       },
-      shipments: [
-        {
-          name: sanitize(shipment.name),
-          add: sanitize(shipment.add),
-          pin: String(shipment.pin),
-          phone: cleanPhone,
-          country: shipment.country || "India",
-          order: sanitize(shipment.order),
-          payment_mode: shipment.payment_mode === "COD" ? "COD" : "Prepaid",
-          total_amount: String(shipment.total_amount),
-          cod_amount: shipment.payment_mode === "COD" ? String(shipment.total_amount) : "0",
-          shipping_mode: "Surface",
-          weight: "0.5", // KG
-          quantity: "1",
-          products_desc: "General Merchandise",
-        },
-      ],
-    };
-    console.log(payload);
-    
-    const body = qs.stringify({
-      format: "json",
-      data: JSON.stringify(payload),
-    });
+    ],
+  };
 
-    const res = await axios.post(url, body, {
-      headers: {
-        Authorization: `Token ${DELHIVERY_API_KEY}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      timeout: 15000,
-    });
+  const body = qs.stringify({
+    format: "json",
+    data: JSON.stringify(payload),
+  });
 
-    const pkg = res.data?.packages?.[0];
+  const res = await axios.post(url, body, {
+    headers: {
+      Authorization: `Token ${DELHIVERY_API_KEY}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  });
 
-    if (!pkg?.waybill) {
-      console.error("❌ DELHIVERY FAILURE:", {
-        request: payload,
-        response: res.data,
-      });
-      throw new Error(pkg?.remarks?.[0] || "Delhivery shipment creation failed");
-    }
-
-    return {
-      waybill: pkg.waybill,
-      order_ref: pkg.order,
-      status: pkg.status ?? "created",
-      sort_code: pkg.sort_code ?? null,
-      raw: res.data,
-    };
-  } catch (err: any) {
-    if (axios.isAxiosError(err)) {
-      console.error("❌ DELHIVERY AXIOS ERROR:", {
-        message: err.message,
-        status: err.response?.status,
-        data: err.response?.data,
-      });
-      throw new Error(err.response?.data?.remarks?.[0] || "Delhivery API request failed");
-    }
-
-    console.error("❌ DELHIVERY ERROR:", err.message);
-    throw new Error(err.message || "Unknown Delhivery error");
+  const pkg = res.data?.packages?.[0];
+  if (!pkg?.waybill) {
+    throw new Error(
+      pkg?.remarks?.[0] || "Delhivery shipment creation failed"
+    );
   }
+
+  return {
+    waybill: pkg.waybill,
+    order_ref: pkg.order,
+    status: pkg.status ?? "created",
+    sort_code: pkg.sort_code,
+    raw: res.data,
+  };
 }
 
 /* ================= TRACK SHIPMENT ================= */
 
 export async function getDelhiveryShipmentStatus({
   waybill,
+  orderId,
 }: {
-  waybill: string;
+  waybill?: string;
+  orderId?: string;
 }) {
+  if (!waybill && !orderId) {
+    throw new Error("waybill or orderId required");
+  }
+
   const url =
     SYSTEM === "LOCAL"
       ? LOCAL_DELHIVERY_TRACK_URL
       : PROD_DELHIVERY_TRACK_URL;
 
   const res = await axios.get(url, {
-    params: { waybill },
+    params: {
+      waybill,
+      ref_ids: orderId,
+    },
     headers: {
       Authorization: `Token ${DELHIVERY_API_KEY}`,
     },
   });
 
-  console.log("DELHIVERY TRACK RAW:", res.data);
-
   const shipment = res.data?.ShipmentData?.[0]?.Shipment;
-
-  if (!shipment) {
-    throw new Error("No shipment data from Delhivery");
-  }
+  if (!shipment) throw new Error("No shipment data");
 
   return shipment;
 }

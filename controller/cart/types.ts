@@ -1,9 +1,9 @@
 export interface AddToCartRequest {
   product_id: string;
-  weight: string;
   quantity?: number;
-  userId?: string | null;
-  sessionId: string;
+  weight: string;
+  userId?: string;
+  sessionId?: string;
 }
 
 export interface RemoveFromCartRequest {
@@ -16,11 +16,19 @@ export interface RemoveFromCartRequest {
 
 export interface CartItem {
   product_id: string;
-  total_weight?: string;
-  quantity: number;
   price: number;
+  quantity: number;
   total_price: number;
+  product_name?: string;
+  product_image?: string;
+  product_type?: string;
+  total_weight?: string;
+  size?: string; // <-- added for weight/size
+  originalPrice?: number;
+  total_original_price?: number;
 }
+
+
 
 export interface CartResponse {
   id: string | null;

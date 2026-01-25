@@ -69,12 +69,12 @@ const products = [
       path.join(__dirname, "../public/images/chocolate3.png"),
     ],
     size: ['410gm', '227gm'],
-    size_prices: { "410gm": 710, "227gm": 459 },
-    discounted_prices: { "410gm": 525, "227gm": 339 },
+    size_prices: { "410gm": 2130, "227gm": 1377  },
+    discounted_prices: { "410gm": 1576, "227gm": 999 },
     stock: 50
   },
   {
-    name: 'Pure & Chocolate Combo',
+    name: 'Pure & Chocolate Combo 373g',
     description: 'Peanut Butter Powder Combo Pack, Pure & Chocolate Peanut Butter Powder, 373g Total Protein Per Combo | No Preservatives | 1/3 the Calories | 4x Less Fat, Spread, Blend, Mix or Bake, Perfect for Every Protein Fix, Double in weight when prepared, Just add water to make creamy peanut butter spread or use directly as powder in roti, shakes, baking and many more.',
     img: [
       path.join(__dirname, "../public/images/chocolate1.png"),
@@ -82,12 +82,12 @@ const products = [
       path.join(__dirname, "../public/images/chocolate3.png"),
     ],
     size: ['410gm', '227gm'],
-    size_prices: { "410gm": 2130, "227gm": 1377 },
-    discounted_prices: { "410gm": 1576, "227gm": 999 },
+    size_prices: { "410gm": 1420 , "227gm": 918  },
+    discounted_prices: { "410gm": 1020, "227gm": 680 },
     stock: 50
   },
   {
-    name: 'Pure & Chocolate Combo',
+    name: 'Pure & Chocolate Combo 410g',
     description: 'Peanut Butter Powder Combo Pack, Pure & Chocolate Peanut Butter Powder, 410g Total Protein Per Combo | No Preservatives | 1/3 the Calories | 4x Less Fat, Spread, Blend, Mix or Bake, Perfect for Every Protein Fix, Double in weight when prepared, Just add water to make creamy peanut butter spread or use directly as powder in roti, shakes, baking and many more.',
     img: [
       path.join(__dirname, "../public/images/chocolate1.png"),
@@ -95,12 +95,12 @@ const products = [
       path.join(__dirname, "../public/images/chocolate3.png"),
     ],
     size: ['410gm', '227gm'],
-    size_prices: { "410gm": 2130, "227gm": 1377 },
-    discounted_prices: { "410gm": 1576, "227gm": 999 },
+  size_prices: { "410gm": 1420 , "227gm": 918  },
+    discounted_prices: { "410gm": 1020, "227gm": 680 },
     stock: 50
   },
   {
-    name: 'Chocolate & Original Combo',
+    name: 'Chocolate & Original Combo 340g',
     description: 'Peanut Butter Powder Combo Pack, Chocolate & Original Peanut Butter Powder, 340g Total Protein Per Combo No Preservatives, 1/3 the Calories, 4x Less Fat, Spread, Blend, Mix or Bake, Perfect for Every Protein Fix, Double in weight when prepared, Just add water to make creamy peanut butter spread or use directly as powder in shakes, baking and many more.',
     img: [
       path.join(__dirname, "../public/images/chocolate1.png"),
@@ -108,11 +108,12 @@ const products = [
       path.join(__dirname, "../public/images/chocolate3.png"),
     ],
     size: ['410gm', '227gm'],
-    size_prices: { "410gm": 2130, "227gm": 1377 },
-    discounted_prices: { "410gm": 1576, "227gm": 999 },
+   size_prices: { "410gm": 1420 , "227gm": 918  },
+    discounted_prices: { "410gm": 1020, "227gm": 680 },
     stock: 50
   },
 ];
+
 
 
 const blogImages = [

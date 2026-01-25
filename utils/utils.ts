@@ -131,25 +131,9 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
 
 
 export function normalizeCart(items: CartItem[]) {
-    let product_count = 0;
-    let total_price = 0;
-
-    const normalized = items.map(item => {
-        const itemTotal = item.quantity * item.price;
-        product_count += item.quantity;
-        total_price += itemTotal;
-
-        return {
-            ...item,
-            total_price: itemTotal
-        };
-    });
-
-    return {
-        items: normalized,
-        product_count,
-        total_price
-    };
+  const total_price = items.reduce((sum, i) => sum + (i.total_price ?? 0), 0);
+  const product_count = items.reduce((sum, i) => sum + (i.quantity ?? 0), 0);
+  return { items, total_price, product_count };
 }
 
 export function emptyCart(userId?: string | null, sessionId?: string | null) {
