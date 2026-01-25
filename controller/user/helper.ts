@@ -37,73 +37,109 @@ async function getAllUsers(
 /* ===============================
    LOGIN → SEND OTP
 ================================ */
-async function login(
-  req: Request,
-  res: Response
+/* ===============================
+   LOGIN WITH SESSION ID
+================================ */
+async function loginWithSessionId(
+  req: Request<{}, {}, { userId: string }>,
+  res: Response<SignLoginResponse>
 ): Promise<Response<SignLoginResponse>> {
   try {
-    emitter.emit("log", {
-      msg: `Controller Initialize for ${login.name}`,
-      level: "info",
-    });
+    const { userId: sessionId } = req.body;
 
-    const { number } = req.body;
-    if (!number) {
+    if (!sessionId) {
       return res.status(400).json({
         errorCode: "INVALID_REQUEST",
-        error: "Mobile number is required",
+        message: "Session ID is required",
       });
     }
 
-    // 1️⃣ Find user
-    let { data: user } = await supabase
+    /* ---------- 1️⃣ Check if user exists by session_id ---------- */
+    let { data: user, error: userError } = await supabase
       .from("users")
       .select("*")
-      .eq("phone_number", number)
+      .eq("session_id", sessionId)
       .maybeSingle();
 
-    // 2️⃣ Create user if not exists
+    /* ---------- 2️⃣ Create user if not exists ---------- */
     if (!user) {
-      const { data: newUser, error } = await supabase
+      const { data: newUser, error: insertError } = await supabase
         .from("users")
         .insert({
-          phone_number: number,
+          session_id: sessionId,
         })
         .select("*")
         .single();
 
-      if (error) throw error;
+      if (insertError) throw insertError;
       user = newUser;
     }
 
-    // 3️⃣ Generate OTP
-    const otp = generateOTP();
+    /* ---------- 3️⃣ Transfer cart if exists for session ---------- */
+    const { data: cart } = await supabase
+      .from("carts")
+      .select("*")
+      .eq("session_id", sessionId)
+      .maybeSingle();
 
-    // 4️⃣ Insert OTP (🔥 DB handles expiry)
-    const { error: otpError } = await supabase.from("user_otps").insert({
-      user_id: user.id,
-      otp,
-    });
+    if (cart) {
+      // Update cart to attach to user
+      await supabase
+        .from("carts")
+        .update({
+          user_id: user.id,
+          session_id: null, // remove session once attached
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", cart.id);
+    }
 
-    if (otpError) throw otpError;
+    /* ---------- 4️⃣ Fetch default address ---------- */
+    const { data: address } = await supabase
+      .from("user_addresses")
+      .select(`
+        address_line1,
+        address_line2,
+        postal_code,
+        city,
+        state,
+        country
+      `)
+      .eq("user_id", user.id)
+      .eq("is_active", true)
+      .eq("is_default", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    // 5️⃣ Send OTP (WhatsApp / SMS)
-    await client.messages.create({
-      from: "whatsapp:+14155238886",
-      contentSid: "HX229f5a04fd0510ce1b071852155d3e75",
-      contentVariables: JSON.stringify({ "1": otp }),
-      to: "whatsapp:+917347316884",
-    });
+    /* ---------- 5️⃣ Prepare response ---------- */
+    const [firstName, ...lastNameParts] = (user.name || "").split(" ");
 
     return res.json({
       errorCode: "NO_ERROR",
-      message: "OTP generated successfully",
+      message: "Login successful",
+      userId: user.id,
+      user: {
+        firstName: firstName || "",
+        lastName: lastNameParts.join(" ") || "",
+        email: user.email || "",
+      },
+      address: address
+        ? {
+          address: address.address_line1 || "",
+          locality: address.address_line2 || "",
+          pincode: address.postal_code || "",
+          city: address.city || "",
+          state: address.state || "",
+          country: address.country || "",
+        }
+        : {},
     });
   } catch (e: any) {
     console.error(e);
     return res.status(500).json({
-      errorCode: "Server_Error",
-      error: e.message,
+      errorCode: "SERVER_ERROR",
+      message: e.message,
     });
   }
 }
@@ -253,7 +289,7 @@ async function signout(
 
 export {
   getAllUsers,
-  login,
+  loginWithSessionId,
   otpAuth,
   signout,
 };

@@ -190,18 +190,19 @@ async function createTables() {
         level text
       );
 
-      /* ---------- USERS ---------- */
-      create table if not exists users (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        updated_at timestamptz default now(),
-        name text,
-        email text unique,
-        type user_role not null default 'user',
-        phone_number text,
-        address text,
-        image_url text
-      );
+    /* ---------- USERS ---------- */
+create table if not exists users (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  name text,
+  email text unique,
+  type user_role not null default 'user',
+  phone_number text,
+  address text,
+  image_url text,
+  session_id text unique         -- 👈 NEW: store session id
+);
 
       /* ---------- USER OTPs ---------- */
       create table if not exists user_otps (
