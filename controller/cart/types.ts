@@ -1,6 +1,6 @@
 export interface AddToCartRequest {
   product_id: string;
-  size: string;
+  weight: string;
   quantity?: number;
   userId?: string | null;
   sessionId: string;
@@ -16,7 +16,7 @@ export interface RemoveFromCartRequest {
 
 export interface CartItem {
   product_id: string;
-  size?: string;
+  total_weight?: string;
   quantity: number;
   price: number;
   total_price: number;

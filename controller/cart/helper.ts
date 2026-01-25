@@ -22,7 +22,7 @@ export async function addToCart(
   res: Response<CartAPIResponse>
 ) {
   try {
-    const { product_id, quantity = 1, userId } = req.body;
+    const { product_id, quantity = 1, userId, weight } = req.body;
 
     const sessionId =
       req.body.sessionId ?? (await ensureGuestSession(req, res));
@@ -77,6 +77,7 @@ export async function addToCart(
     /* ===============================
        CREATE CART
     ================================ */
+
     if (!cart) {
       const items: CartItem[] = [
         {
@@ -84,6 +85,7 @@ export async function addToCart(
           quantity,
           price,
           total_price: price * quantity,
+          total_weight: weight
         },
       ];
 
@@ -120,6 +122,7 @@ export async function addToCart(
         quantity,
         price,
         total_price: price * quantity,
+        total_weight: weight, // ← fix here
       });
     }
 

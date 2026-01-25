@@ -242,8 +242,8 @@ create table if not exists users (
 
       create index if not exists idx_wishlist_user_id on wishlist(user_id);
 
-      /* ---------- CARTS ---------- */
-      create table if not exists carts (
+  /* ---------- CARTS ---------- */
+create table if not exists carts (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
@@ -252,7 +252,6 @@ create table if not exists users (
   items jsonb default '[]'::jsonb,
   product_count int default 0,
   total_price numeric(10,2) default 0,
-  total_weight numeric(10,3) default 0, -- 👈 NEW
   constraint cart_owner_check check (
     user_id is not null or session_id is not null
   )

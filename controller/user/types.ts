@@ -23,11 +23,23 @@ type getAllUserData = {
 }
 
 type SignLoginResponse = {
-    errorCode:'NO_ERROR' | 'Invalid_Credentials' | 'Server Error' | 'Auth_Create_Failed' | 'DB_Insert_Failed'
-    data?:{
-        session:string,
-        user:User
-    }
+      errorCode: string;
+  message?: string;
+  userId?: string;
+  user?: {
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+  };
+  address?: {
+    address: string | null;
+    locality: string | null;
+    pincode: string | null;
+    city: string | null;
+    state: string | null;
+    country: string | null;
+  } | {};
+  error?: any;
  }
 type SignOutResponse = {
     errorCode: 'NO_ERROR' | 'Server_Error' | 'Invalid_Token';

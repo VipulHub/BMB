@@ -41,7 +41,7 @@ async function createOrder(
     const { data: user } = await supabase
       .from("users")
       .select("*")
-      .eq("id", userId)
+      .eq("session_id", userId)
       .maybeSingle();
 
     if (!user) {
@@ -51,6 +51,7 @@ async function createOrder(
       });
     }
 
+    /* ---------- UPDATE USER ---------- */
     await supabase
       .from("users")
       .update({
@@ -59,6 +60,7 @@ async function createOrder(
       })
       .eq("id", user.id);
 
+    /* ---------- ADDRESS ---------- */
     const { data: existingAddress } = await supabase
       .from("user_addresses")
       .select("*")
@@ -94,6 +96,7 @@ async function createOrder(
       });
     }
 
+    /* ---------- RAZORPAY ORDER ---------- */
     const razorpayOrder = await razorpay.orders.create({
       amount: cart.total * 100,
       currency: "INR",
@@ -101,6 +104,7 @@ async function createOrder(
       payment_capture: true,
     });
 
+    /* ---------- DB ORDER ---------- */
     const { data: order } = await supabase
       .from("orders")
       .insert({
@@ -152,6 +156,7 @@ async function verifyRazorpayPayment(
       razorpay_signature,
     } = req.body;
 
+    /* ---------- ORDER ---------- */
     const { data: order } = await supabase
       .from("orders")
       .select("*")
@@ -159,31 +164,46 @@ async function verifyRazorpayPayment(
       .single();
 
     if (!order) {
-      return res.status(404).json({ errorCode: "ORDER_NOT_FOUND" });
+      return res.status(404).json({
+        errorCode: "ORDER_NOT_FOUND",
+        error: "Order not found",
+      });
     }
 
-    const { data: paymentRow } = await supabase
+    /* ---------- PAYMENT ---------- */
+    const { data: payment } = await supabase
       .from("order_payment_history")
       .select("*")
       .eq("order_id", order_id)
       .single();
 
-    const methodUsed = paymentRow.method_used;
+    if (!payment) {
+      return res.status(404).json({
+        errorCode: "PAYMENT_NOT_FOUND",
+        error: "Payment record missing",
+      });
+    }
 
+    const methodUsed = payment.method_used;
+
+    /* ---------- VERIFY ONLINE ---------- */
     if (methodUsed === "ONLINE") {
       const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-      const expected = crypto
+      const expectedSignature = crypto
         .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
         .update(body)
         .digest("hex");
 
-      if (expected !== razorpay_signature) {
+      if (expectedSignature !== razorpay_signature) {
         await supabase
           .from("order_payment_history")
           .update({ status: "failed" })
           .eq("order_id", order_id);
 
-        return res.status(400).json({ errorCode: "INVALID_SIGNATURE" });
+        return res.status(400).json({
+          errorCode: "INVALID_SIGNATURE",
+          error: "Payment verification failed",
+        });
       }
 
       await supabase
@@ -200,19 +220,45 @@ async function verifyRazorpayPayment(
         .eq("order_id", order_id);
     }
 
+    /* ---------- COD ---------- */
     if (methodUsed === "COD") {
       await supabase
         .from("orders")
         .update({ status: "cod_confirmed" })
         .eq("id", order_id);
+
+      await supabase
+        .from("order_payment_history")
+        .update({ status: "pending" })
+        .eq("order_id", order_id);
     }
 
+    /* ---------- PREVENT DUPLICATE SHIPMENT ---------- */
+    const { data: existingShipment } = await supabase
+      .from("shipping_details")
+      .select("waybill")
+      .eq("order_id", order.id)
+      .maybeSingle();
+
+    if (existingShipment) {
+      return res.status(200).json({
+        errorCode: "NO_ERROR",
+        data: {
+          order_id: order.id,
+          status: order.status,
+          waybill: existingShipment.waybill,
+        },
+      });
+    }
+
+    /* ---------- USER ---------- */
     const { data: user } = await supabase
       .from("users")
       .select("name, phone_number")
       .eq("id", order.user_id)
       .single();
 
+    /* ---------- ADDRESS ---------- */
     const { data: address } = await supabase
       .from("user_addresses")
       .select("*")
@@ -220,10 +266,18 @@ async function verifyRazorpayPayment(
       .eq("is_default", true)
       .single();
 
+    if (!address) {
+      return res.status(400).json({
+        errorCode: "ADDRESS_MISSING",
+        error: "Default address not found",
+      });
+    }
+
+    /* ---------- SHIPMENT PAYLOAD ---------- */
     const shipmentPayload: ShipmentData = {
-      name: address.full_name || user!.name,
-      phone: address.phone_number || user!.phone_number!,
-      add: `${address.address_line1} ${address.address_line2 ?? ""}`,
+      name: address.full_name || user?.name || "Customer",
+      phone: address.phone_number || user?.phone_number || "9999999999",
+      add: `${address.address_line1} ${address.address_line2 ?? ""}`.trim(),
       pin: address.postal_code,
       country: address.country,
       order: `ORD_${order.id}`,
@@ -231,12 +285,14 @@ async function verifyRazorpayPayment(
       total_amount: Number(order.total_amount),
     };
 
+    /* ---------- CREATE DELHIVERY ---------- */
     const shipment = await createDelhiveryShipment(shipmentPayload);
 
+    /* ---------- SAVE SHIPPING ---------- */
     await supabase.from("shipping_details").insert({
       order_id: order.id,
       waybill: shipment.waybill,
-      delhivery_order_id: shipment.order_ref ?? null,
+      delhivery_order_id: shipment.order_ref,
 
       consignee_name: shipmentPayload.name,
       phone: shipmentPayload.phone,
@@ -246,20 +302,38 @@ async function verifyRazorpayPayment(
 
       payment_mode: shipmentPayload.payment_mode,
       total_amount: shipmentPayload.total_amount,
-      cod_amount: shipment.raw?.cod_amount ?? 0,
+      cod_amount:
+        shipmentPayload.payment_mode === "COD"
+          ? shipmentPayload.total_amount
+          : 0,
+
+      shipping_mode: "Surface",
+      weight: 0.5,
+      quantity: 1,
+      product_description: "General Merchandise",
 
       current_status: shipment.status,
       current_location: shipment.sort_code ?? null,
-
       delhivery_status_code: shipment.status,
       delhivery_response: shipment.raw,
     });
 
-    return res.status(200).json({ errorCode: "NO_ERROR" });
+    return res.status(200).json({
+      errorCode: "NO_ERROR",
+      data: {
+        order_id: order.id,
+        status: order.status,
+        waybill: shipment.waybill,
+      },
+    });
   } catch (e: any) {
+    const message = e.message || "Server error";
+
     return res.status(500).json({
-      errorCode: "SERVER_ERROR",
-      error: e.message,
+      errorCode: message.includes("pickup")
+        ? "DELHIVERY_PICKUP_CONFIG_ERROR"
+        : "SERVER_ERROR",
+      error: message,
     });
   }
 }
@@ -275,42 +349,82 @@ async function getAllOrdersByUserId(
   try {
     const userId = req.params.userId;
 
-    const { data: orders } = await supabase
+    /* ---------- ORDERS ---------- */
+    const { data: orders, error: orderError } = await supabase
       .from("orders")
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    if (!orders?.length) {
-      return res.status(200).json({ errorCode: "NO_ERROR", data: [] });
+    if (orderError) throw orderError;
+
+    if (!orders || orders.length === 0) {
+      return res.status(200).json({
+        errorCode: "NO_ERROR",
+        data: [],
+      });
     }
 
     const orderIds = orders.map(o => o.id);
 
-    const [{ data: payments }, { data: shipments }] =
-      await Promise.all([
-        supabase.from("order_payment_history").select("*").in("order_id", orderIds),
-        supabase.from("shipping_details").select("*").in("order_id", orderIds),
-      ]);
+    /* ---------- PAYMENTS + SHIPMENTS + ITEMS ---------- */
+    const [
+      { data: payments },
+      { data: shipments },
+      { data: orderItems },
+    ] = await Promise.all([
+      supabase
+        .from("order_payment_history")
+        .select("*")
+        .in("order_id", orderIds),
 
+      supabase
+        .from("shipping_details")
+        .select("*")
+        .in("order_id", orderIds),
+
+      supabase
+        .from("order_items")
+        .select("order_id, product_id")
+        .in("order_id", orderIds),
+    ]);
+
+    /* ---------- PRODUCT MAP ---------- */
+    const productMap = new Map<string, string[]>();
+
+    (orderItems ?? []).forEach(item => {
+      if (!productMap.has(item.order_id)) {
+        productMap.set(item.order_id, []);
+      }
+      productMap.get(item.order_id)!.push(item.product_id);
+    });
+
+    /* ---------- LIVE TRACKING ---------- */
     const trackingResults = await Promise.allSettled(
-      (shipments ?? []).filter(s => s.waybill).map(async s => ({
-        order_id: s.order_id,
-        tracking: await getDelhiveryShipmentStatus({ waybill: s.waybill }),
-      }))
+      (shipments ?? [])
+        .filter(s => s.waybill)
+        .map(async s => ({
+          order_id: s.order_id,
+          tracking: await getDelhiveryShipmentStatus({
+            waybill: s.waybill,
+          }),
+        }))
     );
 
     const trackingMap = new Map<string, any>();
+
     trackingResults.forEach(r => {
       if (r.status === "fulfilled") {
         trackingMap.set(r.value.order_id, r.value.tracking);
       }
     });
 
-    const response = orders.map(order => {
+    /* ---------- FINAL RESPONSE ---------- */
+    const response: GetAllOrdersResponse["data"] = orders.map(order => {
       const payment = payments?.find(p => p.order_id === order.id);
       const shipment = shipments?.find(s => s.order_id === order.id);
       const tracking = trackingMap.get(order.id);
+      const products = productMap.get(order.id) ?? [];
 
       return {
         order_id: order.id,
@@ -318,8 +432,9 @@ async function getAllOrdersByUserId(
         order_status: order.status,
         total_amount: Number(order.total_amount),
 
-        product_ids: order.product_ids ?? [],
-        product_count: order.product_count ?? 0,
+        /* ✅ REQUIRED BY TYPE */
+        product_ids: products,
+        product_count: products.length,
 
         payment: {
           method: payment?.method_used ?? null,
@@ -330,16 +445,33 @@ async function getAllOrdersByUserId(
         },
 
         shipping: {
-          status: tracking?.Status?.Status ?? shipment?.current_status ?? null,
+          status:
+            tracking?.Status?.Status ??
+            shipment?.current_status ??
+            null,
+
           tracking_number: shipment?.waybill ?? null,
-          location: tracking?.Status?.Location ?? shipment?.current_location ?? null,
-          expected_delivery: tracking?.ExpectedDeliveryDate ?? shipment?.expected_delivery ?? null,
+
+          location:
+            tracking?.Status?.Location ??
+            shipment?.current_location ??
+            null,
+
+          expected_delivery:
+            tracking?.ExpectedDeliveryDate ??
+            shipment?.expected_delivery ??
+            null,
         },
       };
     });
 
-    return res.status(200).json({ errorCode: "NO_ERROR", data: response });
+    return res.status(200).json({
+      errorCode: "NO_ERROR",
+      data: response,
+    });
   } catch (e: any) {
+    console.error("GET ORDERS ERROR:", e);
+
     return res.status(500).json({
       errorCode: "SERVER_ERROR",
       error: e.message,

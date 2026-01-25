@@ -56,20 +56,7 @@ async function getDashboard(
 
     const { data: rawProducts, error: productError } = await supabase
       .from("products")
-      .select(`
-        id,
-        created_at,
-        user_id,
-        name,
-        description,
-        stock,
-        product_type,
-        sizes,
-        size_prices,
-        discounted_prices,
-        image_urls,
-        priority
-      `);
+      .select(`*`);
 
     if (productError) {
       return res.status(400).json({ errorCode: "Server_Error", error: productError });

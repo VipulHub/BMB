@@ -77,56 +77,58 @@ async function verifyToken(token: string): Promise<JwtPayload | unknown> {
 const SESSION_COOKIE_NAME = "SESSION_ID";
 const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours in ms
 
+
 async function ensureGuestSession(req: Request, res: Response): Promise<string> {
     let sessionId = req.cookies?.[SESSION_COOKIE_NAME];
 
-    let createNewSession = false;
+    const isLocal = env.SYSTEM === "LOCAL";
 
-    if (sessionId) {
-        // Check if session exists in carts table and is not expired
-        const { data: cart, error } = await supabase
-            .from("carts")
-            .select("created_at")
-            .eq("session_id", sessionId)
-            .single();
-
-        if (error || !cart) {
-            // Session doesn't exist in DB → create new
-            createNewSession = true;
-        } else {
-            const createdTime = new Date(cart.created_at).getTime();
-            const now = Date.now();
-
-            if (now - createdTime > SESSION_DURATION) {
-                // Session expired → create new
-                createNewSession = true;
-            }
-        }
-    } else {
-        createNewSession = true;
-    }
-
-    if (createNewSession) {
+    /* ===============================
+       SESSION ID NOT PRESENT → CREATE
+    ================================ */
+    if (!sessionId) {
         sessionId = uuidv4();
 
         res.cookie(SESSION_COOKIE_NAME, sessionId, {
-            httpOnly: true,
-            secure: true,          // ✅ REQUIRED
-            sameSite: "none",      // ✅ REQUIRED for Firebase
+            httpOnly: !isLocal,     // JS-readable only in LOCAL
+            secure: !isLocal,       // HTTPS only in PROD
             maxAge: SESSION_DURATION,
-            domain: ".bmbstore.in" // ✅ VERY IMPORTANT
+            path: "/",
         });
 
-        // Optional: create empty cart in DB for new session
         await supabase.from("carts").insert({
             session_id: sessionId,
-            product_ids: [],
+            items: [],
             product_count: 0,
+            total_price: 0,
+        });
+
+        return sessionId;
+    }
+
+    /* ===============================
+       SESSION EXISTS → ENSURE DB ROW
+    ================================ */
+    const { data: cart } = await supabase
+        .from("carts")
+        .select("id")
+        .eq("session_id", sessionId)
+        .maybeSingle();
+
+    // 👇 Cookie exists but DB row doesn't → recreate cart ONLY
+    if (!cart) {
+        await supabase.from("carts").insert({
+            session_id: sessionId,
+            items: [],
+            product_count: 0,
+            total_price: 0,
         });
     }
 
     return sessionId;
 }
+
+
 
 export function normalizeCart(items: CartItem[]) {
     let product_count = 0;
