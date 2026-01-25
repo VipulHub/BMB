@@ -83,6 +83,7 @@ export type DashboardData = {
   products: Product[];
   blogs: Blog[];
   cart: Cart;
+  cartCount: number, 
   coupons: Coupon[];
 };
 

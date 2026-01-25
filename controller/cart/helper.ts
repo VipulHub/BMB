@@ -1,10 +1,7 @@
 import supabase from "../../config/db.config.ts";
 import type { Request, Response } from "express";
 
-import {
-  emptyCart,
-  normalizeCart,
-} from "../../utils/utils.ts";
+import { emptyCart, normalizeCart } from "../../utils/utils.ts";
 
 import type {
   AddToCartRequest,
@@ -12,89 +9,142 @@ import type {
   CartItem,
   RemoveFromCartRequest,
 } from "./types.ts";
-import type { Cart } from "../dashboard/types.ts";
 
+/* ===============================
+   HELPERS
+================================ */
 
+async function enrichCartItems(items: CartItem[]): Promise<CartItem[]> {
+  if (!items.length) return [];
+
+  const productIds = [...new Set(items.map(i => i.product_id))];
+
+  const { data: products } = await supabase
+    .from("products")
+    .select("id, name, product_type, image_urls, size_prices, discounted_prices")
+    .in("id", productIds);
+
+  const productMap = new Map(
+    (products ?? []).map(p => [p.id, p])
+  );
+
+  return items.map(item => {
+    const product = productMap.get(item.product_id);
+
+    const originalPrice =
+      product?.size_prices?.[item.size!] ?? item.price;
+
+    return {
+      ...item,
+      product_name: product?.name ?? "",
+      product_type: product?.product_type ?? "",
+      product_image: product?.image_urls?.[0] ?? "",
+      originalPrice,
+      total_original_price: originalPrice * item.quantity,
+    };
+  });
+}
 
 /* ===============================
    ADD TO CART
 ================================ */
 export async function addToCart(
   req: Request<{}, {}, AddToCartRequest>,
-  res: Response<{ errorCode: string; cart?: Cart }>
+  res: Response<CartAPIResponse>
 ) {
   try {
     const { product_id, quantity = 1, weight, userId, sessionId } = req.body;
 
-    if (!weight) return res.status(400).json({ errorCode: "WEIGHT_REQUIRED" });
+    if (!weight) {
+      return res.status(400).json({ errorCode: "WEIGHT_REQUIRED" });
+    }
 
-    // Fetch product
+    // ---------- FETCH PRODUCT ----------
     const { data: product } = await supabase
       .from("products")
       .select("sizes, size_prices, discounted_prices")
       .eq("id", product_id)
       .single();
 
-    if (!product) return res.status(400).json({ errorCode: "Product_Not_Found" });
-    if (!product.sizes?.includes(weight)) return res.status(400).json({ errorCode: "INVALID_WEIGHT" });
-
-    const discountedPrice = product.discounted_prices?.[weight] ?? null;
-    const basePrice = product.size_prices?.[weight] ?? null;
-    const price = Number(discountedPrice ?? basePrice);
-
-    if (!price) return res.status(400).json({ errorCode: "INVALID_PRODUCT_PRICE" });
-
-    // Fetch existing cart
-    const query = supabase.from("carts").select("*");
-    userId ? query.eq("user_id", userId) : query.eq("session_id", sessionId);
-    const { data: cart } = await query.maybeSingle();
-
-    // If cart doesn't exist, create
-    if (!cart) {
-      const items: CartItem[] = [
-        { product_id, size: weight, quantity, price, total_price: price * quantity }
-      ];
-      const { data: newCart } = await supabase
-        .from("carts")
-        .insert({
-          user_id: userId ?? null,
-          session_id: sessionId,
-          items,
-          total_price: price * quantity,
-          product_count: quantity
-        })
-        .select("*")
-        .single();
-
-      return res.json({ errorCode: "NO_ERROR", cart: newCart });
+    if (!product) {
+      return res.status(400).json({ errorCode: "PRODUCT_NOT_FOUND" });
     }
 
-    // Update existing cart
-    let items: CartItem[] = Array.isArray(cart.items) ? cart.items : [];
+    if (!product.sizes?.includes(weight)) {
+      return res.status(400).json({ errorCode: "INVALID_WEIGHT" });
+    }
 
-    // Check if product + weight exists
-    const existing = items.find(i => i.product_id === product_id && i.size === weight);
+    const price =
+      product.discounted_prices?.[weight] ??
+      product.size_prices?.[weight];
+
+    if (!price) {
+      return res.status(400).json({ errorCode: "INVALID_PRODUCT_PRICE" });
+    }
+
+    // ---------- FETCH CART ----------
+    let cartQuery = supabase.from("carts").select("*");
+    userId
+      ? cartQuery.eq("user_id", userId)
+      : cartQuery.eq("session_id", sessionId);
+
+    const { data: cart } = await cartQuery.maybeSingle();
+
+    let items: CartItem[] = Array.isArray(cart?.items) ? cart!.items : [];
+
+    const existing = items.find(
+      i => i.product_id === product_id && i.size === weight
+    );
+
     if (existing) {
       existing.quantity += quantity;
       existing.total_price = existing.quantity * existing.price;
     } else {
-      items.push({ product_id, size: weight, quantity, price, total_price: price * quantity });
+      items.push({
+        product_id,
+        size: weight,
+        quantity,
+        price,
+        total_price: price * quantity,
+      });
     }
 
-    // Normalize totals for all items
     const normalized = normalizeCart(items);
 
-    const { data: updatedCart } = await supabase
-      .from("carts")
-      .update(normalized)
-      .eq("id", cart.id)
-      .select("*")
-      .single();
+    let updatedCart;
 
-    return res.json({ errorCode: "NO_ERROR", cart: updatedCart });
+    if (!cart) {
+      const { data } = await supabase
+        .from("carts")
+        .insert({
+          user_id: userId ?? null,
+          session_id: sessionId,
+          ...normalized,
+        })
+        .select("*")
+        .single();
+
+      updatedCart = data;
+    } else {
+      const { data } = await supabase
+        .from("carts")
+        .update(normalized)
+        .eq("id", cart.id)
+        .select("*")
+        .single();
+
+      updatedCart = data;
+    }
+
+    updatedCart.items = await enrichCartItems(updatedCart.items);
+
+    return res.json({
+      errorCode: "NO_ERROR",
+      cart: updatedCart,
+    });
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ errorCode: "Server_Error" });
+    console.error("addToCart error:", e);
+    return res.status(500).json({ errorCode: "SERVER_ERROR" });
   }
 }
 
@@ -102,64 +152,59 @@ export async function addToCart(
    REMOVE FROM CART
 ================================ */
 export async function removeFromCart(
-  req: Request<{}, {}, RemoveFromCartRequest & { weight?: string; checkDelete?: boolean }>,
+  req: Request<{}, {}, RemoveFromCartRequest>,
   res: Response<CartAPIResponse>
 ) {
   try {
     const { product_id, cartId, sessionId, weight, checkDelete } = req.body;
 
     if (!cartId && !sessionId) {
-      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
+      return res.json({
+        errorCode: "NO_ERROR",
+        cart: emptyCart(sessionId),
+      });
     }
 
-    // Fetch cart
     let cartQuery = supabase.from("carts").select("*");
-    if (cartId) cartQuery = cartQuery.eq("id", cartId);
-    else cartQuery = cartQuery.eq("session_id", sessionId);
+    cartId
+      ? cartQuery.eq("id", cartId)
+      : cartQuery.eq("session_id", sessionId);
 
     const { data: cart } = await cartQuery.maybeSingle();
+
     if (!cart) {
-      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
+      return res.json({
+        errorCode: "NO_ERROR",
+        cart: emptyCart(sessionId),
+      });
     }
 
     let items: CartItem[] = Array.isArray(cart.items) ? cart.items : [];
 
-    // -------------------- DELETE WHOLE CART IF checkDelete --------------------
-    if (checkDelete) {
-      await supabase.from("carts").delete().eq("id", cart.id);
-      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
-    }
+    const index = items.findIndex(
+      i => i.product_id === product_id && i.size === weight
+    );
 
-    if (!product_id) {
+    if (index === -1) {
       return res.json({ errorCode: "NO_ERROR", cart });
     }
 
-    // Find the item with matching productId + weight
-    const itemIndex = items.findIndex(i => i.product_id === product_id && i.size === weight);
-    if (itemIndex === -1) {
-      return res.json({ errorCode: "NO_ERROR", cart });
-    }
-
-    const item = items[itemIndex]!;
-
-    // Decrement quantity or remove item
-    if (item.quantity > 1) {
-      item.quantity -= 1;
-      item.total_price = (item.price / (item.quantity + 1)) * item.quantity; // calculate using unit price
-      if (item.originalPrice !== undefined)
-        item.total_original_price = (item.originalPrice / (item.quantity + 1)) * item.quantity;
+    if (checkDelete || items[index]!.quantity <= 1) {
+      items.splice(index, 1);
     } else {
-      // Remove item completely
-      items.splice(itemIndex, 1);
+      items[index]!.quantity -= 1;
+      items[index]!.total_price =
+        items[index]!.quantity * items[index]!.price;
     }
 
-    // Delete cart if empty after removal
-    if (items.length === 0) {
+    if (!items.length) {
       await supabase.from("carts").delete().eq("id", cart.id);
-      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
+      return res.json({
+        errorCode: "NO_ERROR",
+        cart: emptyCart(sessionId),
+      });
     }
 
-    // Update cart totals
     const normalized = normalizeCart(items);
 
     const { data: updatedCart } = await supabase
@@ -169,9 +214,14 @@ export async function removeFromCart(
       .select("*")
       .single();
 
-    return res.json({ errorCode: "NO_ERROR", cart: updatedCart });
+    updatedCart.items = await enrichCartItems(updatedCart.items);
+
+    return res.json({
+      errorCode: "NO_ERROR",
+      cart: updatedCart,
+    });
   } catch (e) {
     console.error("removeFromCart error:", e);
-    return res.status(500).json({ errorCode: "Server_Error", error: e });
+    return res.status(500).json({ errorCode: "SERVER_ERROR" });
   }
 }

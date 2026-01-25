@@ -144,93 +144,44 @@ async function createOrder(
    VERIFY PAYMENT + CREATE SHIPMENT
 ========================================================= */
 
+/* --------------------- VERIFY RAZORPAY PAYMENT & CREATE SHIPMENT --------------------- */
 async function verifyRazorpayPayment(
   req: Request<any, any, VerifyPaymentRequest>,
   res: Response
 ) {
   try {
-    const {
-      order_id,
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-    } = req.body;
+    const { order_id, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
     /* ---------- ORDER ---------- */
-    const { data: order } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("id", order_id)
-      .single();
-
-    if (!order) {
-      return res.status(404).json({
-        errorCode: "ORDER_NOT_FOUND",
-        error: "Order not found",
-      });
-    }
+    const { data: order } = await supabase.from("orders").select("*").eq("id", order_id).single();
+    if (!order)
+      return res.status(404).json({ errorCode: "ORDER_NOT_FOUND", error: "Order not found" });
 
     /* ---------- PAYMENT ---------- */
-    const { data: payment } = await supabase
-      .from("order_payment_history")
-      .select("*")
-      .eq("order_id", order_id)
-      .single();
-
-    if (!payment) {
-      return res.status(404).json({
-        errorCode: "PAYMENT_NOT_FOUND",
-        error: "Payment record missing",
-      });
-    }
+    const { data: payment } = await supabase.from("order_payment_history").select("*").eq("order_id", order_id).single();
+    if (!payment)
+      return res.status(404).json({ errorCode: "PAYMENT_NOT_FOUND", error: "Payment record missing" });
 
     const methodUsed = payment.method_used;
 
     /* ---------- VERIFY ONLINE ---------- */
     if (methodUsed === "ONLINE") {
       const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-      const expectedSignature = crypto
-        .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
-        .update(body)
-        .digest("hex");
+      const expectedSignature = crypto.createHmac("sha256", env.RAZORPAY_KEY_SECRET).update(body).digest("hex");
 
       if (expectedSignature !== razorpay_signature) {
-        await supabase
-          .from("order_payment_history")
-          .update({ status: "failed" })
-          .eq("order_id", order_id);
-
-        return res.status(400).json({
-          errorCode: "INVALID_SIGNATURE",
-          error: "Payment verification failed",
-        });
+        await supabase.from("order_payment_history").update({ status: "failed" }).eq("order_id", order_id);
+        return res.status(400).json({ errorCode: "INVALID_SIGNATURE", error: "Payment verification failed" });
       }
 
-      await supabase
-        .from("orders")
-        .update({
-          status: "paid",
-          razorpay_payment_id,
-        })
-        .eq("id", order_id);
-
-      await supabase
-        .from("order_payment_history")
-        .update({ status: "success" })
-        .eq("order_id", order_id);
+      await supabase.from("orders").update({ status: "paid", razorpay_payment_id }).eq("id", order_id);
+      await supabase.from("order_payment_history").update({ status: "success" }).eq("order_id", order_id);
     }
 
     /* ---------- COD ---------- */
     if (methodUsed === "COD") {
-      await supabase
-        .from("orders")
-        .update({ status: "cod_confirmed" })
-        .eq("id", order_id);
-
-      await supabase
-        .from("order_payment_history")
-        .update({ status: "pending" })
-        .eq("order_id", order_id);
+      await supabase.from("orders").update({ status: "cod_confirmed" }).eq("id", order_id);
+      await supabase.from("order_payment_history").update({ status: "pending" }).eq("order_id", order_id);
     }
 
     /* ---------- PREVENT DUPLICATE SHIPMENT ---------- */
@@ -239,50 +190,37 @@ async function verifyRazorpayPayment(
       .select("waybill")
       .eq("order_id", order.id)
       .maybeSingle();
-
-    if (existingShipment) {
+    if (existingShipment)
       return res.status(200).json({
         errorCode: "NO_ERROR",
-        data: {
-          order_id: order.id,
-          status: order.status,
-          waybill: existingShipment.waybill,
-        },
+        data: { order_id: order.id, status: order.status, waybill: existingShipment.waybill },
       });
-    }
 
-    /* ---------- USER ---------- */
-    const { data: user } = await supabase
-      .from("users")
-      .select("name, phone_number")
-      .eq("id", order.user_id)
-      .single();
-
-    /* ---------- ADDRESS ---------- */
+    /* ---------- USER & ADDRESS ---------- */
+    const { data: user } = await supabase.from("users").select("name, phone_number").eq("id", order.user_id).single();
     const { data: address } = await supabase
       .from("user_addresses")
       .select("*")
       .eq("user_id", order.user_id)
       .eq("is_default", true)
       .single();
+    if (!address)
+      return res.status(400).json({ errorCode: "ADDRESS_MISSING", error: "Default address not found" });
 
-    if (!address) {
-      return res.status(400).json({
-        errorCode: "ADDRESS_MISSING",
-        error: "Default address not found",
-      });
-    }
-
-    /* ---------- SHIPMENT PAYLOAD ---------- */
+    /* ---------- SHIPMENT PAYLOAD (Dynamic) ---------- */
     const shipmentPayload: ShipmentData = {
       name: address.full_name || user?.name || "Customer",
-      phone: address.phone_number || user?.phone_number || "9999999999",
+      phone: (address.phone_number || user?.phone_number || "9999999999").replace(/\D/g, "").slice(-10),
       add: `${address.address_line1} ${address.address_line2 ?? ""}`.trim(),
-      pin: address.postal_code,
-      country: address.country,
+      pin: Number(address.postal_code),
+      country: address.country || "India",
       order: `ORD_${order.id}`,
       payment_mode: methodUsed === "COD" ? "COD" : "Prepaid",
       total_amount: Number(order.total_amount),
+      weight: 500, // in grams
+      quantity: 1,
+      state: address.state || "Haryana",
+      city: address.city || "Gurugram",
     };
 
     /* ---------- CREATE DELHIVERY ---------- */
@@ -293,25 +231,18 @@ async function verifyRazorpayPayment(
       order_id: order.id,
       waybill: shipment.waybill,
       delhivery_order_id: shipment.order_ref,
-
       consignee_name: shipmentPayload.name,
       phone: shipmentPayload.phone,
       address: shipmentPayload.add,
       pin: shipmentPayload.pin,
       country: shipmentPayload.country,
-
       payment_mode: shipmentPayload.payment_mode,
       total_amount: shipmentPayload.total_amount,
-      cod_amount:
-        shipmentPayload.payment_mode === "COD"
-          ? shipmentPayload.total_amount
-          : 0,
-
+      cod_amount: shipmentPayload.payment_mode === "COD" ? shipmentPayload.total_amount : 0,
       shipping_mode: "Surface",
-      weight: 0.5,
-      quantity: 1,
+      weight: shipmentPayload.weight,
+      quantity: shipmentPayload.quantity,
       product_description: "General Merchandise",
-
       current_status: shipment.status,
       current_location: shipment.sort_code ?? null,
       delhivery_status_code: shipment.status,
@@ -320,19 +251,13 @@ async function verifyRazorpayPayment(
 
     return res.status(200).json({
       errorCode: "NO_ERROR",
-      data: {
-        order_id: order.id,
-        status: order.status,
-        waybill: shipment.waybill,
-      },
+      data: { order_id: order.id, status: order.status, waybill: shipment.waybill },
     });
   } catch (e: any) {
+    console.error("VERIFY PAYMENT ERROR:", e);
     const message = e.message || "Server error";
-
     return res.status(500).json({
-      errorCode: message.includes("pickup")
-        ? "DELHIVERY_PICKUP_CONFIG_ERROR"
-        : "SERVER_ERROR",
+      errorCode: message.includes("pickup") ? "DELHIVERY_PICKUP_CONFIG_ERROR" : "SERVER_ERROR",
       error: message,
     });
   }
