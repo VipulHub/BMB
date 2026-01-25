@@ -8,10 +8,11 @@ export interface AddToCartRequest {
 
 export interface RemoveFromCartRequest {
   product_id: string;
-  size: string;
+  weight: string;
   sessionId: string;
   userId?: string | null;
   cartId?: string | null;
+  checkDelete?:boolean | null;
 }
 
 export interface CartItem {

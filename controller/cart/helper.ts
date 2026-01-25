@@ -102,43 +102,66 @@ export async function addToCart(
    REMOVE FROM CART
 ================================ */
 export async function removeFromCart(
-  req: Request<{}, {}, RemoveFromCartRequest & { size?: string }>,
+  req: Request<{}, {}, RemoveFromCartRequest & { weight?: string; checkDelete?: boolean }>,
   res: Response<CartAPIResponse>
 ) {
   try {
-    const { product_id, userId, cartId, sessionId, size } = req.body;
+    const { product_id, cartId, sessionId, weight, checkDelete } = req.body;
+
+    if (!cartId && !sessionId) {
+      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
+    }
 
     // Fetch cart
     let cartQuery = supabase.from("carts").select("*");
     if (cartId) cartQuery = cartQuery.eq("id", cartId);
-    else if (userId) cartQuery = cartQuery.eq("user_id", userId);
     else cartQuery = cartQuery.eq("session_id", sessionId);
 
     const { data: cart } = await cartQuery.maybeSingle();
-    if (!cart) return res.json({ errorCode: "NO_ERROR", cart: emptyCart(userId, sessionId) });
-
-    let items: CartItem[] = cart.items ?? [];
-
-    if (!product_id) return res.json({ errorCode: "NO_ERROR", cart });
-
-    // Decrease quantity for specific product + size
-    const item = items.find(i => i.product_id === product_id && (!size || i.size === size));
-    if (!item) return res.json({ errorCode: "NO_ERROR", cart });
-
-    item.quantity -= 1;
-    item.total_price = item.quantity * item.price;
-
-    // Remove items with quantity <= 0
-    items = items.filter(i => i.quantity > 0);
-
-    // Delete cart if empty
-    if (!items.length) {
-      await supabase.from("carts").delete().eq("id", cart.id);
-      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(userId, sessionId) });
+    if (!cart) {
+      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
     }
 
-    // Update cart
+    let items: CartItem[] = Array.isArray(cart.items) ? cart.items : [];
+
+    // -------------------- DELETE WHOLE CART IF checkDelete --------------------
+    if (checkDelete) {
+      await supabase.from("carts").delete().eq("id", cart.id);
+      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
+    }
+
+    if (!product_id) {
+      return res.json({ errorCode: "NO_ERROR", cart });
+    }
+
+    // Find the item with matching productId + weight
+    const itemIndex = items.findIndex(i => i.product_id === product_id && i.size === weight);
+    if (itemIndex === -1) {
+      return res.json({ errorCode: "NO_ERROR", cart });
+    }
+
+    const item = items[itemIndex]!;
+
+    // Decrement quantity or remove item
+    if (item.quantity > 1) {
+      item.quantity -= 1;
+      item.total_price = (item.price / (item.quantity + 1)) * item.quantity; // calculate using unit price
+      if (item.originalPrice !== undefined)
+        item.total_original_price = (item.originalPrice / (item.quantity + 1)) * item.quantity;
+    } else {
+      // Remove item completely
+      items.splice(itemIndex, 1);
+    }
+
+    // Delete cart if empty after removal
+    if (items.length === 0) {
+      await supabase.from("carts").delete().eq("id", cart.id);
+      return res.json({ errorCode: "NO_ERROR", cart: emptyCart(sessionId) });
+    }
+
+    // Update cart totals
     const normalized = normalizeCart(items);
+
     const { data: updatedCart } = await supabase
       .from("carts")
       .update(normalized)
