@@ -21,7 +21,7 @@ import { paymentRoutes } from "./payment/payment.ts";
 const routePaths: routeRegistration = [
     { routepath: "/user", router: userRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
     { routepath: "/product", router: productRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
-    { routepath: "/dashboard", router: dashboardRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
+    { routepath: "/dashboard", router: dashboardRoutes, middlewares: [], authMiddleware: [apiHeartBeat,checkToken] },
     { routepath: "/cart", router: cartRoutes, middlewares: [], authMiddleware: [apiHeartBeat, checkToken] },
     { routepath: "/payment", router: paymentRoutes, middlewares: [], authMiddleware: [apiHeartBeat] },
 ];
