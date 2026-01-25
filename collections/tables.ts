@@ -243,18 +243,20 @@ async function createTables() {
 
       /* ---------- CARTS ---------- */
       create table if not exists carts (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        updated_at timestamptz default now(),
-        user_id uuid unique references users(id) on delete cascade,
-        session_id text unique,
-        items jsonb default '[]'::jsonb,
-        product_count int default 0,
-        total_price numeric(10,2) default 0,
-        constraint cart_owner_check check (
-          user_id is not null or session_id is not null
-        )
-      );
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  user_id uuid unique references users(id) on delete cascade,
+  session_id text unique,
+  items jsonb default '[]'::jsonb,
+  product_count int default 0,
+  total_price numeric(10,2) default 0,
+  total_weight numeric(10,3) default 0, -- 👈 NEW
+  constraint cart_owner_check check (
+    user_id is not null or session_id is not null
+  )
+);
+
 
       /* ---------- PAYMENT METHODS ---------- */
       create table if not exists payment_methods (
@@ -447,23 +449,23 @@ async function seedDatabase() {
 
     // --- INSERT PRODUCTS ---
     for (const product of products) {
-  const imageUrls: string[] = [];
-  for (const img of product.img) {
-    imageUrls.push(await uploadToStorage(img, "products"));
-  }
+      const imageUrls: string[] = [];
+      for (const img of product.img) {
+        imageUrls.push(await uploadToStorage(img, "products"));
+      }
 
-  await supabase.from("products").insert({
-    user_id: adminId,
-    name: product.name,
-    description: product.description,
-    stock: product.stock,
-    product_type: "peanut_butter",
-    sizes: product.size,
-    size_prices: product.size_prices,
-    discounted_prices: product.discounted_prices,
-    image_urls: imageUrls,
-  });
-}
+      await supabase.from("products").insert({
+        user_id: adminId,
+        name: product.name,
+        description: product.description,
+        stock: product.stock,
+        product_type: "peanut_butter",
+        sizes: product.size,
+        size_prices: product.size_prices,
+        discounted_prices: product.discounted_prices,
+        image_urls: imageUrls,
+      });
+    }
 
     // --- INSERT BLOGS ---
     for (let i = 0; i < blogImages.length; i++) {
