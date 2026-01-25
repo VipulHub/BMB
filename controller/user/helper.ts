@@ -37,9 +37,6 @@ async function getAllUsers(
 /* ===============================
    LOGIN → SEND OTP
 ================================ */
-/* ===============================
-   LOGIN WITH SESSION ID
-================================ */
 async function loginWithSessionId(
   req: Request<{}, {}, { userId: string }>,
   res: Response<SignLoginResponse>
@@ -65,9 +62,7 @@ async function loginWithSessionId(
     if (!user) {
       const { data: newUser, error: insertError } = await supabase
         .from("users")
-        .insert({
-          session_id: sessionId,
-        })
+        .insert({ session_id: sessionId })
         .select("*")
         .single();
 
@@ -83,12 +78,11 @@ async function loginWithSessionId(
       .maybeSingle();
 
     if (cart) {
-      // Update cart to attach to user
       await supabase
         .from("carts")
         .update({
           user_id: user.id,
-          session_id: null, // remove session once attached
+          session_id: null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", cart.id);
@@ -98,6 +92,7 @@ async function loginWithSessionId(
     const { data: address } = await supabase
       .from("user_addresses")
       .select(`
+        full_name,
         address_line1,
         address_line2,
         postal_code,
@@ -111,10 +106,32 @@ async function loginWithSessionId(
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+      
+    /* ---------- 5️⃣ Determine name (fallback to address) ---------- */
+    let fullName = (user.name && user.name.trim()) || (address?.full_name && address.full_name.trim()) || "Customer";
 
-    /* ---------- 5️⃣ Prepare response ---------- */
-    const [firstName, ...lastNameParts] = (user.name || "").split(" ");
+    // Update user.name in DB if missing
+    if (!user.name && address?.full_name) {
+      await supabase
+        .from("users")
+        .update({ name: address.full_name })
+        .eq("id", user.id);
+      user.name = address.full_name;
+    }
 
+    const [firstName, ...lastNameParts] = fullName.split(" ");
+
+    /* ---------- 6️⃣ Prepare address fallback ---------- */
+    const userAddress = {
+      address: address?.address_line1 || "",
+      locality: address?.address_line2 || "",
+      pincode: address?.postal_code || "",
+      city: address?.city || "",
+      state: address?.state || "",
+      country: address?.country || "",
+    };
+
+    /* ---------- 7️⃣ Prepare response ---------- */
     return res.json({
       errorCode: "NO_ERROR",
       message: "Login successful",
@@ -124,16 +141,7 @@ async function loginWithSessionId(
         lastName: lastNameParts.join(" ") || "",
         email: user.email || "",
       },
-      address: address
-        ? {
-          address: address.address_line1 || "",
-          locality: address.address_line2 || "",
-          pincode: address.postal_code || "",
-          city: address.city || "",
-          state: address.state || "",
-          country: address.country || "",
-        }
-        : {},
+      address: userAddress,
     });
   } catch (e: any) {
     console.error(e);
@@ -143,6 +151,7 @@ async function loginWithSessionId(
     });
   }
 }
+
 
 /* ===============================
    OTP AUTH / VERIFY OTP
