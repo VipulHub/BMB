@@ -2,6 +2,8 @@ import supabase from "../../config/db.config.ts";
 import type { Request, Response } from "express";
 import { AppError } from "../../types/express-error.ts";
 import { emitter } from "../../utils/emiter.ts";
+import { ensureGuestSession } from "../../utils/utils.ts";
+
 import type {
   GetDashboardResponse,
   Product,
@@ -10,18 +12,17 @@ import type {
   CartItem,
   Coupon
 } from "./types.ts";
-import { ensureGuestSession } from "../../utils/utils.ts";
 
 async function getDashboard(
   req: Request,
   res: Response<GetDashboardResponse>
 ): Promise<Response<GetDashboardResponse>> {
   try {
-    /* ---------------- SESSION ---------------- */
+    /* ================= SESSION ================= */
     const sessionId = await ensureGuestSession(req, res);
     req.headers["x-session-id"] = sessionId;
 
-    /* ---------------- CART ---------------- */
+    /* ================= CART ================= */
     let { data: cart } = await supabase
       .from("carts")
       .select("*")
@@ -43,21 +44,26 @@ async function getDashboard(
       cart = newCart!;
     }
 
-    let items: CartItem[] = Array.isArray(cart.items)
-      ? (cart.items as CartItem[])
-      : [];
+    const rawItems = Array.isArray(cart.items) ? cart.items : [];
 
+    /* ================= CART TOTALS ================= */
     let product_count = 0;
     let total_price = 0;
 
-    items = items.map((item) => {
+    const recalculatedItems = rawItems.map((item: any) => {
       const itemTotal = item.quantity * item.price;
       product_count += item.quantity;
       total_price += itemTotal;
-      return { ...item, total_price: itemTotal };
+
+      return {
+        ...item,
+        total_price: itemTotal,
+        total_original_price: item.originalPrice
+          ? item.originalPrice * item.quantity
+          : itemTotal
+      };
     });
 
-    /* Sync cart totals */
     if (
       product_count !== cart.product_count ||
       total_price !== cart.total_price
@@ -65,7 +71,7 @@ async function getDashboard(
       const { data: updatedCart } = await supabase
         .from("carts")
         .update({
-          items,
+          items: recalculatedItems,
           product_count,
           total_price,
           updated_at: new Date().toISOString()
@@ -77,18 +83,11 @@ async function getDashboard(
       cart = updatedCart!;
     }
 
-    /* ---------------- PRODUCTS ---------------- */
-    const { data: rawProducts, error: productError } = await supabase
+    /* ================= PRODUCTS ================= */
+    const { data: rawProducts } = await supabase
       .from("products")
       .select("*")
       .order("priority", { ascending: false });
-
-    if (productError) {
-      return res.status(400).json({
-        errorCode: "Server_Error",
-        error: productError
-      });
-    }
 
     const products: Product[] = (rawProducts ?? []).map((p: any) => ({
       id: p.id,
@@ -104,41 +103,62 @@ async function getDashboard(
       discounted_prices: p.discounted_prices,
       priority: p.priority,
       price:
-        p.discounted_prices && Object.values(p.discounted_prices).length > 0
-          ? Number(Object.values(p.discounted_prices)[0])
-          : p.size_prices && Object.values(p.size_prices).length > 0
-          ? Number(Object.values(p.size_prices)[0])
-          : 0
+        p.discounted_prices?.["227gm"] ??
+        Object.values(p.discounted_prices ?? {})[0] ??
+        Object.values(p.size_prices ?? {})[0] ??
+        0
     }));
 
-    const productMap = new Map(
-      products.map((p) => [String(p.id), p])
-    );
+    const productMap = new Map(products.map(p => [p.id, p]));
 
-    /* ---------------- ENRICH CART ITEMS ---------------- */
-    const enrichedItems: CartItem[] = items.map((item) => {
-      const product = productMap.get(String(item.product_id));
+    /* ================= LEGACY CART ================= */
+    const legacyItems: CartItem[] = recalculatedItems.map((item: any) => {
+      const product = productMap.get(item.product_id);
+
       return {
-        ...item,
+        product_id: item.product_id,
+        quantity: item.quantity,
+        price: item.price,
+        total_price: item.total_price,
         product_name: product?.name ?? null,
         product_image: product?.image_urls?.[0] ?? null,
         product_type: product?.product_type ?? null
       };
     });
 
-    cart.items = enrichedItems;
+    const legacyCart: Cart = {
+      id: cart.id,
+      created_at: cart.created_at,
+      user_id: cart.user_id,
+      session_id: cart.session_id,
+      items: legacyItems,
+      product_count,
+      total_price
+    };
 
-    /* ---------------- BLOGS ---------------- */
-    const { data: rawBlogs, error: blogError } = await supabase
+    /* ================= NEW CART (v2, weight/size-aware) ================= */
+    const apiCart: Cart = {
+      id: cart.id,
+      created_at: cart.created_at,
+      user_id: cart.user_id,
+      session_id: cart.session_id,
+      items: recalculatedItems.map((item: any) => {
+        const product = productMap.get(item.product_id);
+        return {
+          ...item,
+          product_name: product?.name ?? null,
+          product_image: product?.image_urls?.[0] ?? null,
+          product_type: product?.product_type ?? null
+        };
+      }),
+      product_count,
+      total_price
+    };
+
+    /* ================= BLOGS ================= */
+    const { data: rawBlogs } = await supabase
       .from("blogs")
       .select("id, created_at, user_id, header, paragraph1, image_urls");
-
-    if (blogError) {
-      return res.status(400).json({
-        errorCode: "Server_Error",
-        error: blogError
-      });
-    }
 
     const blogs: Blog[] = (rawBlogs ?? []).map((b: any) => ({
       id: b.id,
@@ -149,7 +169,7 @@ async function getDashboard(
       image_urls: b.image_urls ?? []
     }));
 
-    /* ---------------- COUPONS ---------------- */
+    /* ================= COUPONS ================= */
     const today = new Date().toISOString().split("T")[0];
 
     const { data: rawCoupons } = await supabase
@@ -160,39 +180,32 @@ async function getDashboard(
       .gte("valid_to", today);
 
     const cartProductIds = new Set(
-      cart.items.map((i: { product_id: any; }) => String(i.product_id))
+      legacyCart.items.map(i => i.product_id)
     );
 
-    const coupons: Coupon[] = (rawCoupons ?? []).map((c: any) => {
-      const applicableToProduct =
-        !c.product_id || cartProductIds.has(String(c.product_id));
+    const coupons: Coupon[] = (rawCoupons ?? []).map((c: any) => ({
+      id: c.id,
+      code: c.coupon_code,
+      discount_percent: c.discount_percent,
+      valid_from: c.valid_from,
+      valid_to: c.valid_to,
+      product_id: c.product_id ?? null,
+      product_type: c.product_type ?? null,
+      applicable_to_cart:
+        (!c.product_id || cartProductIds.has(c.product_id)) &&
+        (!c.product_type ||
+          legacyCart.items.some(i => i.product_type === c.product_type))
+    }));
 
-      const applicableToType =
-        !c.product_type ||
-        cart.items.some(
-          (i: CartItem) => i.product_type === c.product_type
-        );
-
-      return {
-        id: c.id,
-        code: c.coupon_code,
-        discount_percent: c.discount_percent,
-        valid_from: c.valid_from,
-        valid_to: c.valid_to,
-        product_id: c.product_id ?? null,
-        product_type: c.product_type ?? null,
-        applicable_to_cart: applicableToProduct && applicableToType
-      };
-    });
-
-    /* ---------------- FINAL RESPONSE ---------------- */
+    /* ================= FINAL RESPONSE ================= */
     return res.status(200).json({
       errorCode: "NO_ERROR",
       data: {
         products,
         blogs,
-        cart,
-        cartCount: cart.product_count, // 👈 DASHBOARD COUNT
+        cart: legacyCart, // old
+        cart_v2: apiCart, // new, enriched with product_name, image, type
+        cartCount: product_count,
         coupons
       },
       sessionId
@@ -203,7 +216,7 @@ async function getDashboard(
     emitter.emit("error", {
       msg: error.message,
       stack: error.stack!,
-      level: 'error',
+      level: "error",
       code: 500,
       methodName: getDashboard.name
     });

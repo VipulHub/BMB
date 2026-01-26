@@ -14,9 +14,8 @@ export type Product = {
   size_prices?: Record<string, number>;        // map of size -> price
   discounted_prices?: Record<string, number>;  // map of size -> discounted price
   price?: number; // optional if you want a default
-  priority:number
+  priority: number;
 };
-
 
 /* ===============================
    BLOG
@@ -39,6 +38,11 @@ export type CartItem = {
   price: number;
   total_price: number;
 
+  /* optional for new weight-based cart */
+  size?: string;
+  originalPrice?: number;
+  total_original_price?: number;
+
   /* frontend helpers */
   product_name?: string | null;
   product_image?: string | null;
@@ -56,6 +60,9 @@ export type Cart = {
   items: CartItem[];
   product_count: number;
   total_price: number;
+
+  /* optional for new cart version */
+  total_original_price?: number;
 };
 
 /* ===============================
@@ -82,8 +89,9 @@ export type Coupon = {
 export type DashboardData = {
   products: Product[];
   blogs: Blog[];
-  cart: Cart;
-  cartCount: number, 
+  cart: Cart;        // legacy cart
+  cart_v2?: Cart;    // new API-style cart (add/remove compatible)
+  cartCount: number;
   coupons: Coupon[];
 };
 
@@ -94,5 +102,5 @@ export type GetDashboardResponse = {
   errorCode: "NO_ERROR" | "Server_Error";
   data?: DashboardData;
   error?: any;
-  sessionId?:string
+  sessionId?: string;
 };
