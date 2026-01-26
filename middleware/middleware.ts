@@ -228,7 +228,7 @@ async function checkToken(
     try {
         let token: string | undefined;
         let authType: "SUPABASE" | "SESSION" | null = null;
-         const sessionId = request.cookies?.["SESSION_ID"] 
+         const sessionId = request.cookies?.["sessionId"] 
          console.log(sessionId,'yolo');
          
         // 2️⃣ Fallback to cookie-based guest session
