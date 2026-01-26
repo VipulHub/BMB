@@ -82,19 +82,23 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
     let sessionId = req.cookies?.[SESSION_COOKIE_NAME];
 
     const isLocal = env.SYSTEM === "LOCAL";
-
+    const cookieOptions = {
+        httpOnly: !isLocal,                 // ❌ false in LOCAL, ✅ true in PROD
+        secure: !isLocal,                   // ❌ false in LOCAL, ✅ true in PROD
+        sameSite: isLocal ? "lax" : "none",  // lax for localhost, none for prod
+        maxAge: SESSION_DURATION,
+        path: "/",
+        ...(isLocal
+            ? {}                               // ❌ NO domain in LOCAL
+            : { domain: ".bmbstore.com" }),     // ✅ shared across subdomains in PROD
+    } as const;
     /* ===============================
        SESSION ID NOT PRESENT → CREATE
     ================================ */
     if (!sessionId) {
         sessionId = uuidv4();
 
-        res.cookie(SESSION_COOKIE_NAME, sessionId, {
-            httpOnly: !isLocal,     // JS-readable only in LOCAL
-            secure: !isLocal,       // HTTPS only in PROD
-            maxAge: SESSION_DURATION,
-            path: "/",
-        });
+        res.cookie(SESSION_COOKIE_NAME, sessionId, cookieOptions);
 
         await supabase.from("carts").insert({
             session_id: sessionId,
@@ -131,9 +135,9 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
 
 
 export function normalizeCart(items: CartItem[]) {
-  const total_price = items.reduce((sum, i) => sum + (i.total_price ?? 0), 0);
-  const product_count = items.reduce((sum, i) => sum + (i.quantity ?? 0), 0);
-  return { items, total_price, product_count };
+    const total_price = items.reduce((sum, i) => sum + (i.total_price ?? 0), 0);
+    const product_count = items.reduce((sum, i) => sum + (i.quantity ?? 0), 0);
+    return { items, total_price, product_count };
 }
 
 export function emptyCart(userId?: string | null, sessionId?: string | null) {
