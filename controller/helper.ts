@@ -81,7 +81,7 @@ const sanitize = (v: string) =>
 export async function createDelhiveryShipment(
   shipment: ShipmentData
 ): Promise<CreatedShipmentResult> {
-  const url = env.SYSTEM === "LOCAL" ? LOCAL_DELHIVERY_URL: PROD_DELHIVERY_URL;
+  const url =  PROD_DELHIVERY_URL;
 
   const cleanPhone = (shipment.phone).replace(/\D/g, "").slice(-10);
 
@@ -97,7 +97,7 @@ export async function createDelhiveryShipment(
         country: shipment.country || "India",
         order: sanitize(shipment.order).slice(0, 45) || "ORDER_0001",
         payment_mode: shipment.payment_mode || "Prepaid",
-        total_amount: Number(shipment.total_amount) || 100,
+        total_amount: Number(shipment.total_amount),
         cod_amount: shipment.payment_mode === "COD" ? Number(shipment.total_amount) : 0,
         shipping_mode: "Surface",
         weight: Number(shipment.weight) || 500,

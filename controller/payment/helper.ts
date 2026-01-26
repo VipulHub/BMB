@@ -23,8 +23,8 @@ import {
 ========================================================= */
 
 const razorpay = new Razorpay({
-  key_id: env.RAZORPAY_KEY_ID,
-  key_secret: env.RAZORPAY_KEY_SECRET,
+  key_id:env.SYSTEM==='LOCAL'?env.RAZORPAY_LOCAL_KEY_ID: env.RAZORPAY_KEY_ID,
+  key_secret: env.SYSTEM==='LOCAL'?env.RAZORPAY_LOCAL_KEY_SECRET:env.RAZORPAY_KEY_SECRET,
 });
 
 /* =========================================================
@@ -123,6 +123,19 @@ async function createOrder(
       status: "initiated",
     });
 
+    /* ===============================
+       ✅ EMPTY CART AFTER ORDER CREATION
+    =============================== */
+    await supabase
+      .from("carts")
+      .update({
+        items: [],
+        product_count: 0,
+        total_price: 0,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", user.id);
+
     return res.status(200).json({
       errorCode: "NO_ERROR",
       data: {
@@ -139,6 +152,7 @@ async function createOrder(
     });
   }
 }
+
 
 /* =========================================================
    VERIFY PAYMENT + CREATE SHIPMENT
@@ -167,7 +181,7 @@ async function verifyRazorpayPayment(
     /* ---------- VERIFY ONLINE ---------- */
     if (methodUsed === "ONLINE") {
       const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-      const expectedSignature = crypto.createHmac("sha256", env.RAZORPAY_KEY_SECRET).update(body).digest("hex");
+      const expectedSignature = crypto.createHmac("sha256", env.SYSTEM==='LOCAL'?env.RAZORPAY_LOCAL_KEY_SECRET:env.RAZORPAY_KEY_SECRET).update(body).digest("hex");
 
       if (expectedSignature !== razorpay_signature) {
         await supabase.from("order_payment_history").update({ status: "failed" }).eq("order_id", order_id);
@@ -215,7 +229,7 @@ async function verifyRazorpayPayment(
       pin: Number(address.postal_code),
       country: address.country || "India",
       order: `ORD_${order.id}`,
-      payment_mode: methodUsed === "COD" ? "COD" : "Prepaid",
+      payment_mode:  "COD",
       total_amount: Number(order.total_amount),
       weight: 500, // in grams
       quantity: 1,

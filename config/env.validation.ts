@@ -17,6 +17,8 @@ const envSchema = Joi.object({
   PROD_DELHIVERY_URL: Joi.string().required(),
   LOCAL_DELHIVERY_TRACK_URL: Joi.string().required(),
   PROD_DELHIVERY_TRACK_URL: Joi.string().required(),
+  RAZORPAY_LOCAL_KEY_ID: Joi.string().required(),
+  RAZORPAY_LOCAL_KEY_SECRET: Joi.string().required()
 }).unknown(); // allow other env vars to pass through
 
 export {

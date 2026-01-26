@@ -15,6 +15,8 @@ interface envConfigType {
     PROD_DELHIVERY_URL: string;
     LOCAL_DELHIVERY_TRACK_URL: string;
     PROD_DELHIVERY_TRACK_URL: string;
+    RAZORPAY_LOCAL_KEY_ID: string,
+    RAZORPAY_LOCAL_KEY_SECRET: string
 }
 export type {
     envConfigType
