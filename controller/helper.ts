@@ -81,7 +81,7 @@ const sanitize = (v: string) =>
 export async function createDelhiveryShipment(
   shipment: ShipmentData
 ): Promise<CreatedShipmentResult> {
-  const url = env.SYSTEM === "LOCAL" ? env.LOCAL_DELHIVERY_URL : env.PROD_DELHIVERY_URL;
+  const url = env.SYSTEM === "LOCAL" ? LOCAL_DELHIVERY_URL: PROD_DELHIVERY_URL;
 
   const cleanPhone = (shipment.phone).replace(/\D/g, "").slice(-10);
 
