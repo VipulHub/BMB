@@ -229,7 +229,6 @@ async function checkToken(
         let token: string | undefined;
         let authType: "SUPABASE" | "SESSION" | null = null;
          const sessionId = request.cookies?.["SESSION_ID"] 
-         console.log(sessionId,'yolo');
          
         // 2️⃣ Fallback to cookie-based guest session
         if (!token && sessionId) {

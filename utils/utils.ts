@@ -97,9 +97,8 @@ async function ensureGuestSession(req: Request, res: Response): Promise<string> 
     ================================ */
     if (!sessionId) {
         sessionId = uuidv4();
-
         res.cookie(SESSION_COOKIE_NAME, sessionId, cookieOptions);
-
+          
         await supabase.from("carts").insert({
             session_id: sessionId,
             items: [],

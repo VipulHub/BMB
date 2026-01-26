@@ -82,7 +82,6 @@ export async function createDelhiveryShipment(
   shipment: ShipmentData
 ): Promise<CreatedShipmentResult> {
   const url = env.SYSTEM === "LOCAL" ? env.LOCAL_DELHIVERY_URL : env.PROD_DELHIVERY_URL;
-  console.log("Delhivery URL:", url);
 
   const cleanPhone = (shipment.phone).replace(/\D/g, "").slice(-10);
 
