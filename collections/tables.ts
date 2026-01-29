@@ -150,48 +150,97 @@ async function uploadToStorage(localPath: string, bucket: string) {
 }
 
 /* ===============================
-   CREATE TABLES
+   CREATE TABLES (SAFE & IDEMPOTENT)
 ================================ */
+
 async function createTables() {
   const { error } = await supabase.rpc("exec_sql", {
     sql: `
-      /* ---------- ENUMS ---------- */
-      do $$ begin
-        if not exists (select 1 from pg_type where typname = 'user_role') then
-          create type user_role as enum ('user', 'admin');
-        end if;
+/* =====================================================
+   ENUMS (SAFE)
+===================================================== */
+do $$ begin
+  if not exists (select 1 from pg_type where typname = 'user_role') then
+    create type user_role as enum ('user', 'admin');
+  end if;
 
-        if not exists (select 1 from pg_type where typname = 'product_size') then
-          create type product_size as enum ('small', 'large', 'largest');
-        end if;
-      end $$;
+  if not exists (select 1 from pg_type where typname = 'product_size') then
+    create type product_size as enum ('small', 'large', 'largest');
+  end if;
+end $$;
 
-      /* ---------- EXTENSIONS ---------- */
-      create extension if not exists "pgcrypto";
+/* =====================================================
+   EXTENSIONS
+===================================================== */
+create extension if not exists "pgcrypto";
 
-      /* ---------- API LOGS ---------- */
-      create table if not exists api_log (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        endpoint text,
-        method text,
-        status_code int,
-        response_time numeric,
-        ip_address text,
-        upload_at timestamptz
-      );
+/* =====================================================
+   API LOGS
+===================================================== */
+create table if not exists api_log (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  endpoint text,
+  method text,
+  status_code int,
+  response_time numeric,
+  ip_address text,
+  upload_at timestamptz
+);
 
-      /* ---------- APPLICATION ERRORS ---------- */
-      create table if not exists app_errors (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        error_message text,
-        stack_trace text,
-        method_name text,
-        level text
-      );
+/* =====================================================
+   FAILED JOBS / RETRY QUEUE
+===================================================== */
+create table if not exists failed_jobs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
 
-    /* ---------- USERS ---------- */
+  job_type text not null,
+  function_name text not null,
+
+  payload jsonb not null,
+  context jsonb default '{}'::jsonb,
+
+  last_error text,
+  last_error_stack text,
+  last_status_code int,
+  last_response jsonb,
+
+  attempts int not null default 0,
+  max_attempts int not null default 10,
+  next_retry_at timestamptz default now(),
+  locked_at timestamptz,
+  locked_by text,
+
+  status text not null default 'pending'
+    check (status in ('pending','processing','succeeded','dead')),
+
+  dedupe_key text unique
+);
+
+create index if not exists idx_failed_jobs_status_next_retry
+  on failed_jobs(status, next_retry_at);
+create index if not exists idx_failed_jobs_job_type
+  on failed_jobs(job_type);
+create index if not exists idx_failed_jobs_locked_at
+  on failed_jobs(locked_at);
+
+/* =====================================================
+   APPLICATION ERRORS
+===================================================== */
+create table if not exists app_errors (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  error_message text,
+  stack_trace text,
+  method_name text,
+  level text
+);
+
+/* =====================================================
+   USERS
+===================================================== */
 create table if not exists users (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz default now(),
@@ -202,48 +251,74 @@ create table if not exists users (
   phone_number text,
   address text,
   image_url text,
-  session_id text unique         -- 👈 NEW: store session id
+  session_id text unique
 );
 
-      /* ---------- USER OTPs ---------- */
-      create table if not exists user_otps (
-        id uuid primary key default gen_random_uuid(),
-        user_id uuid references users(id) on delete cascade,
-        otp text not null,
-        created_at timestamptz default now(),
-        expires_at timestamptz default (now() + interval '5 minutes')
-      );
-
-      create index if not exists idx_user_otps_user_id on user_otps(user_id);
-
-      /* ---------- PRODUCTS ---------- */
-   CREATE TABLE products (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    user_id UUID NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    stock INT DEFAULT 0,
-    product_type TEXT,
-    sizes TEXT[],                -- array of available sizes
-    size_prices JSONB,           -- map of size -> price
-    discounted_prices JSONB,     -- map of size -> discounted price
-    image_urls TEXT[],           -- array of image URLs
-    priority INT DEFAULT 0       -- new column to set display priority
+/* =====================================================
+   USER OTPS
+===================================================== */
+create table if not exists user_otps (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  otp text not null,
+  created_at timestamptz default now(),
+  expires_at timestamptz default (now() + interval '5 minutes')
 );
-      create index if not exists idx_products_user_id on products(user_id);
 
-      /* ---------- WISHLIST ---------- */
-      create table if not exists wishlist (
-        id uuid primary key default gen_random_uuid(),
-        user_id uuid references users(id) on delete cascade,
-        product_ids uuid[] default '{}',
-        created_at timestamptz default now()
-      );
+create index if not exists idx_user_otps_user_id on user_otps(user_id);
 
-      create index if not exists idx_wishlist_user_id on wishlist(user_id);
+/* =====================================================
+   PRODUCTS (FIXED)
+===================================================== */
+create table if not exists products (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  user_id uuid not null,
+  name text not null,
+  description text,
+  stock int default 0,
+  product_type text,
+  sizes text[],
+  size_prices jsonb,
+  discounted_prices jsonb,
+  image_urls text[],
+  priority int default 0
+);
 
-  /* ---------- CARTS ---------- */
+create index if not exists idx_products_user_id on products(user_id);
+
+/* ---- SAFE MIGRATION FOR EXISTING PRODUCTS TABLE ---- */
+do $$ begin
+  if exists (select 1 from information_schema.tables where table_name='products') then
+    alter table products
+      add column if not exists created_at timestamptz default now(),
+      add column if not exists user_id uuid,
+      add column if not exists description text,
+      add column if not exists stock int default 0,
+      add column if not exists product_type text,
+      add column if not exists sizes text[],
+      add column if not exists size_prices jsonb,
+      add column if not exists discounted_prices jsonb,
+      add column if not exists image_urls text[],
+      add column if not exists priority int default 0;
+  end if;
+end $$;
+
+/* =====================================================
+   WISHLIST
+===================================================== */
+create table if not exists wishlist (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  product_ids uuid[] default '{}',
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_wishlist_user_id on wishlist(user_id);
+
+/* =====================================================
+   CARTS
+===================================================== */
 create table if not exists carts (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz default now(),
@@ -258,140 +333,160 @@ create table if not exists carts (
   )
 );
 
+/* =====================================================
+   PAYMENT METHODS
+===================================================== */
+create table if not exists payment_methods (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  user_id uuid references users(id) on delete cascade,
+  card_number text,
+  expiry_date text,
+  cardholder_name text,
+  brand text
+);
 
-      /* ---------- PAYMENT METHODS ---------- */
-      create table if not exists payment_methods (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        user_id uuid references users(id) on delete cascade,
-        card_number text,
-        expiry_date text,
-        cardholder_name text,
-        brand text
-      );
+create index if not exists idx_payment_methods_user_id
+  on payment_methods(user_id);
 
-      create index if not exists idx_payment_methods_user_id on payment_methods(user_id);
+/* =====================================================
+   ORDERS
+===================================================== */
+create table if not exists orders (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  user_id uuid references users(id) on delete cascade,
+  status text default 'pending',
+  total_amount numeric(10,2),
+  product_ids uuid[] default '{}',
+  product_count int default 0,
+  payment_method_id uuid references payment_methods(id),
+  razorpay_order_id text,
+  razorpay_payment_id text
+);
 
-      /* ---------- ORDERS ---------- */
-      create table if not exists orders (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        updated_at timestamptz default now(),
-        user_id uuid references users(id) on delete cascade,
-        status text default 'pending',
-        total_amount numeric(10,2),
-        product_ids uuid[] default '{}',
-        product_count int default 0,
-        payment_method_id uuid references payment_methods(id),
-        razorpay_order_id text,
-        razorpay_payment_id text
-      );
+create index if not exists idx_orders_user_id on orders(user_id);
+create index if not exists idx_orders_razorpay_order_id
+  on orders(razorpay_order_id);
 
-      create index if not exists idx_orders_user_id on orders(user_id);
-      create index if not exists idx_orders_razorpay_order_id on orders(razorpay_order_id);
+/* =====================================================
+   ORDER PAYMENT HISTORY
+===================================================== */
+create table if not exists order_payment_history (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid references orders(id) on delete cascade,
+  created_at timestamptz default now(),
+  amount numeric(10,2),
+  method_used text,
+  status text
+);
 
-      /* ---------- ORDER PAYMENT HISTORY ---------- */
-      create table if not exists order_payment_history (
-        id uuid primary key default gen_random_uuid(),
-        order_id uuid references orders(id) on delete cascade,
-        created_at timestamptz default now(),
-        amount numeric(10,2),
-        method_used text,
-        status text
-      );
+create index if not exists idx_payment_history_order_id
+  on order_payment_history(order_id);
 
-      create index if not exists idx_payment_history_order_id on order_payment_history(order_id);
+/* =====================================================
+   DISCOUNT COUPONS
+===================================================== */
+create table if not exists discount_coupons (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  created_by uuid references users(id) on delete set null,
+  coupon_code text unique not null,
+  title text,
+  description text,
+  discount_percent numeric(5,2),
+  valid_from date,
+  valid_to date,
+  product_id uuid references products(id) on delete cascade,
+  product_type text,
+  is_active boolean default true
+);
 
-      /* ---------- DISCOUNT COUPONS ---------- */
-      create table if not exists discount_coupons (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        created_by uuid references users(id) on delete set null,
-        coupon_code text unique not null,
-        title text,
-        description text,
-        discount_percent numeric(5,2),
-        valid_from date,
-        valid_to date,
-        product_id uuid references products(id) on delete cascade,
-        product_type text,
-        is_active boolean default true
-      );
+/* =====================================================
+   SHIPPING (DELHIVERY)
+===================================================== */
+create table if not exists shipping_details (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid references orders(id) on delete cascade,
+  waybill text unique,
+  delhivery_order_id text,
+  consignee_name text,
+  phone text,
+  address text,
+  pin text,
+  country text,
+  payment_mode text check (payment_mode in ('Prepaid', 'COD')),
+  total_amount numeric(10,2),
+  cod_amount numeric(10,2) default 0,
+  shipping_mode text default 'Surface',
+  weight numeric default 0.5,
+  quantity int default 1,
+  product_description text,
+  current_status text,
+  current_location text,
+  expected_delivery date,
+  last_scan_at timestamptz,
+  delhivery_status_code text,
+  delhivery_response jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
 
-      /* ---------- SHIPPING (DELHIVERY) ---------- */
-      create table if not exists shipping_details (
-        id uuid primary key default gen_random_uuid(),
-        order_id uuid references orders(id) on delete cascade,
-        waybill text unique,
-        delhivery_order_id text,
-        consignee_name text,
-        phone text,
-        address text,
-        pin text,
-        country text,
-        payment_mode text check (payment_mode in ('Prepaid', 'COD')),
-        total_amount numeric(10,2),
-        cod_amount numeric(10,2) default 0,
-        shipping_mode text default 'Surface',
-        weight numeric default 0.5,
-        quantity int default 1,
-        product_description text,
-        current_status text,
-        current_location text,
-        expected_delivery date,
-        last_scan_at timestamptz,
-        delhivery_status_code text,
-        delhivery_response jsonb,
-        created_at timestamptz default now(),
-        updated_at timestamptz default now()
-      );
+create index if not exists idx_shipping_order_id
+  on shipping_details(order_id);
+create index if not exists idx_shipping_waybill
+  on shipping_details(waybill);
 
-      create index if not exists idx_shipping_order_id on shipping_details(order_id);
-      create index if not exists idx_shipping_waybill on shipping_details(waybill);
+/* =====================================================
+   BLOGS
+===================================================== */
+create table if not exists blogs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  created_at timestamptz default now(),
+  header text not null,
+  subheader1 text,
+  paragraph1 text,
+  subheader2 text,
+  paragraph2 text,
+  image_urls text[] default '{}'
+);
 
-      /* ---------- BLOGS ---------- */
-      create table if not exists blogs (
-        id uuid primary key default gen_random_uuid(),
-        user_id uuid references users(id) on delete cascade,
-        created_at timestamptz default now(),
-        header text not null,
-        subheader1 text,
-        paragraph1 text,
-        subheader2 text,
-        paragraph2 text,
-        image_urls text[] default '{}'
-      );
+/* =====================================================
+   USER ADDRESSES
+===================================================== */
+create table if not exists user_addresses (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  full_name text not null,
+  phone_number text,
+  address_line1 text not null,
+  address_line2 text,
+  city text not null,
+  state text not null,
+  country text not null,
+  postal_code text not null,
+  is_active boolean default true,
+  is_default boolean default false,
+  created_at timestamptz default now()
+);
 
-      /* ---------- USER ADDRESSES ---------- */
-      create table if not exists user_addresses (
-        id uuid primary key default gen_random_uuid(),
-        user_id uuid references users(id) on delete cascade,
-        full_name text not null,
-        phone_number text,
-        address_line1 text not null,
-        address_line2 text,
-        city text not null,
-        state text not null,
-        country text not null,
-        postal_code text not null,
-        is_active boolean default true,
-        is_default boolean default false,
-        created_at timestamptz default now()
-      );
-
-      create index if not exists idx_user_addresses_user_id on user_addresses(user_id);
-    `,
+create index if not exists idx_user_addresses_user_id
+  on user_addresses(user_id);
+`,
   });
 
   if (error) {
     console.error("❌ Error creating tables:", error);
   } else {
     emitter.emit("log", {
-      msg: "✅ Tables created successfully (fully aligned & backward-compatible)",
+      msg: "✅ Tables created / migrated successfully",
       level: "info",
     });
   }
 }
+
 
 
 /* ===============================

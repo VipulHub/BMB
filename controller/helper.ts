@@ -5,6 +5,7 @@
 import axios from "axios";
 import qs from "qs";
 import { env } from "../config/envConfig.ts";
+import supabase from "../config/db.config.ts";
 
 /* ================= ENV ================= */
 
@@ -81,11 +82,10 @@ const sanitize = (v: string) =>
 export async function createDelhiveryShipment(
   shipment: ShipmentData
 ): Promise<CreatedShipmentResult> {
-  const url =  PROD_DELHIVERY_URL;
+  const url = PROD_DELHIVERY_URL;
 
-  const cleanPhone = (shipment.phone).replace(/\D/g, "").slice(-10);
+  const cleanPhone = shipment.phone.replace(/\D/g, "").slice(-10);
 
-  // Build the payload dynamically using only required fields
   const payload = {
     pickup_location: { name: "Dasam Commerce Private Limited" },
     shipments: [
@@ -109,7 +109,6 @@ export async function createDelhiveryShipment(
         state: shipment.state || "Haryana",
         city: shipment.city || "Gurugram",
 
-        // Optional fields: default to empty string to avoid Delhivery API errors
         return_name: shipment.return_name || "",
         return_address: shipment.return_address || "",
         return_city: shipment.return_city || "",
@@ -132,28 +131,117 @@ export async function createDelhiveryShipment(
     data: JSON.stringify(payload),
   });
 
-  const res = await axios.post(url, body, {
-    headers: {
-      Authorization: `Token ${env.DELHIVERY_API_KEY}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-  });
+  // ✅ dedupe: same order should not create multiple failed rows
+  const dedupeKey = `DELHIVERY_CREATE_SHIPMENT:${sanitize(shipment.order).slice(0, 45)}`;
 
-  const pkg = res.data?.packages?.[0];
-  console.log("Delhivery Response:", res.data);
+  try {
+    const res = await axios.post(url, body, {
+      headers: {
+        Authorization: `Token ${env.DELHIVERY_API_KEY}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
 
-  if (!pkg?.waybill) {
-    // Use rmk from API response if available
-    throw new Error(pkg?.rmk || "Delhivery shipment creation failed");
+    const pkg = res.data?.packages?.[0];
+    console.log("Delhivery Response:", res.data);
+
+    if (!pkg?.waybill) {
+      // treat as failure, store in retry table
+      const errMsg = pkg?.rmk || "Delhivery shipment creation failed (waybill missing)";
+      await saveFailedJob({
+        dedupeKey,
+        functionName: "createDelhiveryShipment",
+        jobType: "DELHIVERY_CREATE_SHIPMENT",
+        payload: shipment, // ✅ store original ShipmentData for retry
+        context: { order: shipment.order },
+        errorMessage: errMsg,
+        statusCode: res.status,
+        response: res.data,
+      });
+
+      throw new Error(errMsg);
+    }
+
+    return {
+      waybill: pkg.waybill,
+      order_ref: pkg.order,
+      status: pkg.status ?? "created",
+      sort_code: pkg.sort_code,
+      raw: res.data,
+    };
+  } catch (err: any) {
+    // axios error handling
+    const statusCode = err?.response?.status ?? null;
+    const responseData = err?.response?.data ?? null;
+
+    await saveFailedJob({
+      dedupeKey,
+      functionName: "createDelhiveryShipment",
+      jobType: "DELHIVERY_CREATE_SHIPMENT",
+      payload: shipment,
+      context: { order: shipment.order },
+      errorMessage: err?.message || "Unknown Delhivery error",
+      errorStack: err?.stack || null,
+      statusCode,
+      response: responseData,
+    });
+
+    throw err;
   }
+}
 
-  return {
-    waybill: pkg.waybill,
-    order_ref: pkg.order,
-    status: pkg.status ?? "created",
-    sort_code: pkg.sort_code,
-    raw: res.data,
-  };
+/* ===============================
+   SAVE FAILED JOB (UPSERT)
+================================ */
+async function saveFailedJob(args: {
+  dedupeKey: string;
+  jobType: string;
+  functionName: string;
+  payload: any;
+  context?: any;
+  errorMessage: string;
+  errorStack?: string | null;
+  statusCode?: number | null;
+  response?: any;
+}) {
+  const {
+    dedupeKey,
+    jobType,
+    functionName,
+    payload,
+    context,
+    errorMessage,
+    errorStack,
+    statusCode,
+    response,
+  } = args;
+
+  // ✅ upsert so same order doesn’t create multiple records
+  const { error } = await supabase
+    .from("failed_jobs")
+    .upsert(
+      {
+        dedupe_key: dedupeKey,
+        job_type: jobType,
+        function_name: functionName,
+        payload,
+        context: context ?? {},
+        status: "pending",
+        last_error: errorMessage,
+        last_error_stack: errorStack ?? null,
+        last_status_code: statusCode ?? null,
+        last_response: response ?? null,
+
+        // reset retry controls when it fails again
+        next_retry_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "dedupe_key" }
+    );
+
+  if (error) {
+    console.error("❌ failed_jobs insert/upsert error:", error);
+  }
 }
 
 /* ================= TRACK SHIPMENT ================= */

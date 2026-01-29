@@ -14,6 +14,8 @@ import { dashboardRoutes } from "./dashboard/dashboard.ts";
 import { apiHeartBeat, checkToken } from "../middleware/middleware.ts";
 import { cartRoutes } from "./cart/cart.ts";
 import { paymentRoutes } from "./payment/payment.ts";
+import { verifyMailer } from "../utils/email.ts";
+import { startFailedJobsCron } from "../controller/cronjobs/index.ts";
 
 /* ===============================
    ROUTES
@@ -57,7 +59,7 @@ const corsOptions: cors.CorsOptions = {
 const registerApp = async (app: Express) => {
     try {
         const port = env.port;
-
+        verifyMailer()
         centralLoggingEmitter();
         // await dropAllTables();
         // await createTables();
@@ -65,6 +67,7 @@ const registerApp = async (app: Express) => {
         // await seedDatabase();
         // // -----------------------------
         // GLOBAL CORS (MUST BE FIRST)
+        startFailedJobsCron()
         app.use(cors(corsOptions));
         app.use(cookieParser())
         // ✅ Handle all OPTIONS preflight requests BEFORE routes
