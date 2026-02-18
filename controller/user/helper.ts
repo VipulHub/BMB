@@ -65,13 +65,6 @@ async function fetchAddress(userId: string) {
 
 
 
-/* ===============================
-   LOGIN → SEND OTP (EMAIL)
-   - sessionId is the identifier coming from client
-   - If email already exists in DB: DO NOT create/overwrite another user
-     -> use the existing email user and attach this sessionId to it
-   - Else: update the session user’s email
-================================ */
 async function loginWithSessionId(
   req: Request<{}, {}, { sessionId?: string; email?: string }>,
   res: Response<any>
@@ -103,7 +96,6 @@ async function loginWithSessionId(
       return s.trim();
     };
 
-    // ✅ sessionId ONLY
     const sessionId =
       normalizeSessionId(req.body.sessionId!) ||
       normalizeSessionId(req.cookies?.SESSION_ID);
@@ -143,7 +135,6 @@ async function loginWithSessionId(
         .update({
           jwt_token: token,
           jwt_expires_at: jwtExpiresAt,
-          email, // ✅ ensure email stored
           updated_at: new Date().toISOString(),
         })
         .eq("id", userId);
@@ -210,7 +201,7 @@ async function loginWithSessionId(
     };
 
     // -----------------------------------------------------
-    // ✅ A) Find user by session_id (existing session user)
+    // ✅ 1) session MUST exist (as per your requirement)
     // -----------------------------------------------------
     const { data: userBySession, error: findSessionErr } = await supabase
       .from("users")
@@ -220,44 +211,34 @@ async function loginWithSessionId(
 
     if (findSessionErr) throw findSessionErr;
 
+    if (!userBySession) {
+      return res.status(404).json({
+        errorCode: "USER_NOT_FOUND",
+        message: "No user found for this sessionId",
+      });
+    }
+
     // -----------------------------------------------------
-    // ✅ B) Find user by email (existing email user)
+    // ✅ 2) Find by email (case-insensitive)
     // -----------------------------------------------------
     const { data: userByEmail, error: findEmailErr } = await supabase
       .from("users")
       .select("*")
-      .eq("email", emailFromBody)
+      .ilike("email", emailFromBody)
       .maybeSingle();
 
     if (findEmailErr) throw findEmailErr;
 
     // -----------------------------------------------------
-    // ✅ C) Decide target user
-    //    - If email exists: use that user and attach sessionId
-    //    - Else: use session user and update email
+    // ✅ 3) Decide target user WITHOUT violating unique constraints
+    //    IMPORTANT: detach first, then attach (to satisfy unique session_id)
     // -----------------------------------------------------
-    let user: any = null;
+    let user: any = userBySession;
 
     if (userByEmail) {
-      // ✅ Email already exists -> use existing email user
-      user = userByEmail;
-
-      // Attach sessionId to this email user if needed
-      if (String(user.session_id || "").trim() !== sessionId) {
-        const { error: attachSessionErr } = await supabase
-          .from("users")
-          .update({
-            session_id: sessionId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", user.id);
-
-        if (attachSessionErr) throw attachSessionErr;
-        user.session_id = sessionId;
-      }
-
-      // Detach sessionId from old session user (avoid 1 session -> 2 users)
-      if (userBySession && userBySession.id !== userByEmail.id) {
+      // If email belongs to some user:
+      if (userByEmail.id !== userBySession.id) {
+        // ✅ A) Detach session from the current session user FIRST
         const { error: detachErr } = await supabase
           .from("users")
           .update({
@@ -267,21 +248,37 @@ async function loginWithSessionId(
           .eq("id", userBySession.id);
 
         if (detachErr) throw detachErr;
+
+        // ✅ B) Attach session to the email user SECOND
+        const { error: attachErr } = await supabase
+          .from("users")
+          .update({
+            session_id: sessionId,
+            // optional: normalize email stored
+            email: emailFromBody,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", userByEmail.id);
+
+        if (attachErr) throw attachErr;
+
+        // new target user
+        user = { ...userByEmail, session_id: sessionId, email: emailFromBody };
+      } else {
+        // same user -> just normalize email if needed
+        if (normalizeEmail(user.email || "") !== emailFromBody) {
+          const { error: normErr } = await supabase
+            .from("users")
+            .update({ email: emailFromBody, updated_at: new Date().toISOString() })
+            .eq("id", user.id);
+
+          if (normErr) throw normErr;
+          user.email = emailFromBody;
+        }
       }
     } else {
-      // ✅ Email not found -> must have session user to update
-      if (!userBySession) {
-        return res.status(404).json({
-          errorCode: "USER_NOT_FOUND",
-          message: "No user found for this sessionId (and email does not exist)",
-        });
-      }
-
-      user = userBySession;
-
-      // Update email if changed
-      const emailChanged = normalizeEmail(user.email || "") !== emailFromBody;
-      if (emailChanged) {
+      // email does NOT exist -> update session user’s email
+      if (normalizeEmail(user.email || "") !== emailFromBody) {
         const { error: updEmailErr } = await supabase
           .from("users")
           .update({
@@ -296,7 +293,7 @@ async function loginWithSessionId(
     }
 
     // -----------------------------------------------------
-    // ✅ D) Token priority: Bearer > DB (if not expired) > create
+    // ✅ 4) Token priority: Bearer > DB (if not expired) > create
     // -----------------------------------------------------
     const dbToken = String(user.jwt_token || "").trim();
     const isExpired = user.jwt_expires_at
@@ -308,7 +305,6 @@ async function loginWithSessionId(
     if (bearerToken) {
       finalToken = bearerToken;
 
-      // keep DB synced with bearer token
       if (!dbToken || isExpired || dbToken !== bearerToken) {
         const jwtExpiresAt = new Date(
           Date.now() + 7 * 24 * 60 * 60 * 1000
@@ -319,8 +315,6 @@ async function loginWithSessionId(
           .update({
             jwt_token: bearerToken,
             jwt_expires_at: jwtExpiresAt,
-            email: emailFromBody, // ✅ ensure email correct
-            session_id: sessionId, // ✅ ensure session correct
             updated_at: new Date().toISOString(),
           })
           .eq("id", user.id);
@@ -329,24 +323,21 @@ async function loginWithSessionId(
 
         user.jwt_token = bearerToken;
         user.jwt_expires_at = jwtExpiresAt;
-        user.email = emailFromBody;
-        user.session_id = sessionId;
       }
     } else if (dbToken && !isExpired) {
       finalToken = dbToken;
     } else {
-      const { token, jwtExpiresAt } = await makeJwtAndSave(user.id, emailFromBody);
+      const { token, jwtExpiresAt } = await makeJwtAndSave(user.id, user.email);
       finalToken = token;
 
       user.jwt_token = token;
       user.jwt_expires_at = jwtExpiresAt;
-      user.email = emailFromBody;
     }
 
     // -----------------------------------------------------
-    // ✅ E) Always send OTP to latest email
+    // ✅ 5) Always send OTP to latest email
     // -----------------------------------------------------
-    await saveAndSendOtp(user.id, emailFromBody);
+    await saveAndSendOtp(user.id, user.email);
 
     return buildUserResponse(user, finalToken, "OTP sent successfully");
   } catch (e: any) {
@@ -357,6 +348,8 @@ async function loginWithSessionId(
     });
   }
 }
+
+
 
 
 
