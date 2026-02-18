@@ -1,0 +1,23 @@
+interface envConfigType {
+    PORT: string,
+    SYSTEM: string,
+    SUPABASE_URL: string,
+    SUPABASE_SERVICE_ROLE_KEY: string,
+    app_base_path: string,
+    JWTKEY: string,
+    CORS_ORIGINS: string,
+    TWILIO_ACCOUNT_SID: string,
+    TWILIO_AUTH_TOKEN: string,
+    RAZORPAY_KEY_SECRET: string,
+    RAZORPAY_KEY_ID: string,
+    DELHIVERY_API_KEY: string,
+    LOCAL_DELHIVERY_URL: string,
+    PROD_DELHIVERY_URL: string;
+    LOCAL_DELHIVERY_TRACK_URL: string;
+    PROD_DELHIVERY_TRACK_URL: string;
+    RAZORPAY_LOCAL_KEY_ID: string,
+    RAZORPAY_LOCAL_KEY_SECRET: string
+}
+export type {
+    envConfigType
+}
