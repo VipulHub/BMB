@@ -383,12 +383,6 @@ async function loginWithSessionId(
 }
 
 
-
-
-
-
-
-
 /* ===============================
    OTP AUTH / VERIFY OTP
    - Verify OTP
