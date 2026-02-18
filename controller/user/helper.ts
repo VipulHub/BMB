@@ -65,6 +65,20 @@ async function fetchAddress(userId: string) {
 
 
 
+/* ===============================
+   LOGIN → SEND OTP (EMAIL)
+   - sessionId MUST exist (no user creation)
+   - If email already exists in DB:
+       -> use that user (email owner)
+       -> move sessionId to that user (DETACH first, then ATTACH)
+       -> DO NOT update email in this branch (prevents users_email_key crash)
+   - If email does NOT exist and session exists:
+       -> update the session user’s email
+   - Avoid duplicates:
+       ✅ never create new user
+       ✅ detach sessionId before attaching to another user (unique session_id)
+       ✅ only update email when no other user owns it (unique email)
+================================ */
 async function loginWithSessionId(
   req: Request<{}, {}, { sessionId?: string; email?: string }>,
   res: Response<any>
@@ -96,6 +110,7 @@ async function loginWithSessionId(
       return s.trim();
     };
 
+    // ✅ sessionId ONLY
     const sessionId =
       normalizeSessionId(req.body.sessionId!) ||
       normalizeSessionId(req.cookies?.SESSION_ID);
@@ -124,6 +139,7 @@ async function loginWithSessionId(
       });
     }
 
+    // ✅ only updates token fields
     const makeJwtAndSave = async (userId: string, email: string) => {
       const token = await createToken({ userId, email });
       const jwtExpiresAt = new Date(
@@ -161,7 +177,11 @@ async function loginWithSessionId(
       await sendMail({ to: email, subject, html });
     };
 
-    const buildUserResponse = async (userRow: any, token: string, message: string) => {
+    const buildUserResponse = async (
+      userRow: any,
+      token: string,
+      message: string
+    ) => {
       const address = await fetchAddress(userRow.id);
 
       let fullName =
@@ -170,7 +190,10 @@ async function loginWithSessionId(
         "";
 
       if (!userRow.name && address?.full_name) {
-        await supabase.from("users").update({ name: address.full_name }).eq("id", userRow.id);
+        await supabase
+          .from("users")
+          .update({ name: address.full_name })
+          .eq("id", userRow.id);
         userRow.name = address.full_name;
       }
 
@@ -201,7 +224,7 @@ async function loginWithSessionId(
     };
 
     // -----------------------------------------------------
-    // ✅ 1) session MUST exist (as per your requirement)
+    // ✅ 1) session MUST exist
     // -----------------------------------------------------
     const { data: userBySession, error: findSessionErr } = await supabase
       .from("users")
@@ -219,26 +242,33 @@ async function loginWithSessionId(
     }
 
     // -----------------------------------------------------
-    // ✅ 2) Find by email (case-insensitive)
+    // ✅ 2) Find email owner (case-insensitive) safely
+    //    - limit(2) avoids maybeSingle crash if you already have duplicates by case
     // -----------------------------------------------------
-    const { data: userByEmail, error: findEmailErr } = await supabase
+    const { data: emailMatches, error: findEmailErr } = await supabase
       .from("users")
       .select("*")
       .ilike("email", emailFromBody)
-      .maybeSingle();
+      .limit(2);
 
     if (findEmailErr) throw findEmailErr;
 
+    const emailOwner =
+      (emailMatches || []).find(
+        (u) => normalizeEmail(u.email || "") === emailFromBody
+      ) ||
+      (emailMatches || [])[0] ||
+      null;
+
     // -----------------------------------------------------
-    // ✅ 3) Decide target user WITHOUT violating unique constraints
-    //    IMPORTANT: detach first, then attach (to satisfy unique session_id)
+    // ✅ 3) Decide target user without duplicates
     // -----------------------------------------------------
     let user: any = userBySession;
 
-    if (userByEmail) {
-      // If email belongs to some user:
-      if (userByEmail.id !== userBySession.id) {
-        // ✅ A) Detach session from the current session user FIRST
+    if (emailOwner) {
+      // Email exists -> use emailOwner
+      if (emailOwner.id !== userBySession.id) {
+        // A) detach session from current session user FIRST (unique session_id)
         const { error: detachErr } = await supabase
           .from("users")
           .update({
@@ -249,46 +279,37 @@ async function loginWithSessionId(
 
         if (detachErr) throw detachErr;
 
-        // ✅ B) Attach session to the email user SECOND
+        // B) attach session to email owner SECOND
+        // ✅ DO NOT update email here (prevents users_email_key)
         const { error: attachErr } = await supabase
           .from("users")
           .update({
             session_id: sessionId,
-            // optional: normalize email stored
-            email: emailFromBody,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", userByEmail.id);
+          .eq("id", emailOwner.id);
 
         if (attachErr) throw attachErr;
 
-        // new target user
-        user = { ...userByEmail, session_id: sessionId, email: emailFromBody };
+        user = { ...emailOwner, session_id: sessionId };
       } else {
-        // same user -> just normalize email if needed
-        if (normalizeEmail(user.email || "") !== emailFromBody) {
-          const { error: normErr } = await supabase
-            .from("users")
-            .update({ email: emailFromBody, updated_at: new Date().toISOString() })
-            .eq("id", user.id);
-
-          if (normErr) throw normErr;
-          user.email = emailFromBody;
-        }
+        // same user already owns session + email
+        user = userBySession;
       }
     } else {
-      // email does NOT exist -> update session user’s email
-      if (normalizeEmail(user.email || "") !== emailFromBody) {
+      // Email does NOT exist -> update session user's email
+      if (normalizeEmail(userBySession.email || "") !== emailFromBody) {
         const { error: updEmailErr } = await supabase
           .from("users")
           .update({
             email: emailFromBody,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", user.id);
+          .eq("id", userBySession.id);
 
         if (updEmailErr) throw updEmailErr;
-        user.email = emailFromBody;
+
+        user = { ...userBySession, email: emailFromBody };
       }
     }
 
@@ -327,7 +348,10 @@ async function loginWithSessionId(
     } else if (dbToken && !isExpired) {
       finalToken = dbToken;
     } else {
-      const { token, jwtExpiresAt } = await makeJwtAndSave(user.id, user.email);
+      const { token, jwtExpiresAt } = await makeJwtAndSave(
+        user.id,
+        String(user.email || "").trim()
+      );
       finalToken = token;
 
       user.jwt_token = token;
@@ -335,9 +359,18 @@ async function loginWithSessionId(
     }
 
     // -----------------------------------------------------
-    // ✅ 5) Always send OTP to latest email
+    // ✅ 5) Always send OTP to latest email (from DB user)
     // -----------------------------------------------------
-    await saveAndSendOtp(user.id, user.email);
+    const finalEmail = String(user.email || "").trim();
+
+    if (!finalEmail) {
+      return res.status(400).json({
+        errorCode: "INVALID_REQUEST",
+        message: "User email is missing for OTP",
+      });
+    }
+
+    await saveAndSendOtp(user.id, finalEmail);
 
     return buildUserResponse(user, finalToken, "OTP sent successfully");
   } catch (e: any) {
@@ -348,6 +381,7 @@ async function loginWithSessionId(
     });
   }
 }
+
 
 
 
