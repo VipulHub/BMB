@@ -17,7 +17,7 @@ import {
   getDelhiveryShipmentStatus,
   type ShipmentData,
 } from "../helper.ts";
-import { sendShipmentCreatedEmailToUser } from "../../utils/email.ts";
+import { sendShipmentCreatedEmailToOwner, sendShipmentCreatedEmailToUser } from "../../utils/email.ts";
 
 /* =========================================================
    RAZORPAY INIT
@@ -376,7 +376,6 @@ async function createOrder(
         error: "User does not exist",
       });
     }
-    console.log(user);
 
     const { error: updUserErr } = await supabase
       .from("users")
@@ -864,70 +863,50 @@ async function verifyRazorpayPayment(
       return res.status(500).json({ errorCode: "DB_ERROR", error: shipSaveErr.message });
     }
 
+    const mailPayload = {
+      customerName: shipmentPayload.name,
+      orderId: String(order.order_id ?? orderUuid),
+      waybill: shipment.waybill,
+      paymentMode: shipmentPayload.payment_mode as "Prepaid" | "COD",
+      totalAmount: Number(shipmentPayload.total_amount ?? 0),
+      address: {
+        full_name: address.full_name ?? null,
+        phone_number: address.phone_number ?? null,
+        address_line1: address.address_line1 ?? null,
+        address_line2: address.address_line2 ?? null,
+        city: address.city ?? null,
+        state: address.state ?? null,
+        country: address.country ?? null,
+        postal_code: address.postal_code ?? null,
+      },
+      items: (shipment_items.items ?? []).map((it: any) => ({
+        name: String(it?.name ?? "Item"),
+        sku: it?.sku ?? null,
+        units: Number(it?.units ?? it?.qty ?? 1) || 1,
+        selling_price: Number.isFinite(Number(it?.selling_price))
+          ? Number(it.selling_price)
+          : null,
+        weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
+      })),
+    };
     /* ===============================
        9.5) SEND SHIPMENT EMAIL TO USER (BEST EFFORT)
     ================================ */
+    const tasks: Promise<any>[] = [];
+
     if (user?.email) {
-      try {
-        await sendShipmentCreatedEmailToUser({
-          to: user.email,
-          customerName: shipmentPayload.name,
-          orderId: String(order.order_id ?? orderUuid),
-          waybill: shipment.waybill,
-          paymentMode: shipmentPayload.payment_mode,
-          totalAmount: Number(shipmentPayload.total_amount ?? 0),
-          address: {
-            full_name: address.full_name ?? null,
-            phone_number: address.phone_number ?? null,
-            address_line1: address.address_line1 ?? null,
-            address_line2: address.address_line2 ?? null,
-            city: address.city ?? null,
-            state: address.state ?? null,
-            country: address.country ?? null,
-            postal_code: address.postal_code ?? null,
-          },
-          items: (shipment_items.items ?? []).map((it: any) => ({
-            name: String(it?.name ?? "Item"),
-            sku: it?.sku ?? null,
-            units: Number(it?.units ?? it?.qty ?? 1) || 1,
-            selling_price: Number.isFinite(Number(it?.selling_price))
-              ? Number(it.selling_price)
-              : null,
-            weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
-          })),
-        });
-        await sendShipmentCreatedEmailToUser({
-          to: 'bmbstoreindia@gmail.com',
-          customerName: shipmentPayload.name,
-          orderId: String(order.order_id ?? orderUuid),
-          waybill: shipment.waybill,
-          paymentMode: shipmentPayload.payment_mode,
-          totalAmount: Number(shipmentPayload.total_amount ?? 0),
-          address: {
-            full_name: address.full_name ?? null,
-            phone_number: address.phone_number ?? null,
-            address_line1: address.address_line1 ?? null,
-            address_line2: address.address_line2 ?? null,
-            city: address.city ?? null,
-            state: address.state ?? null,
-            country: address.country ?? null,
-            postal_code: address.postal_code ?? null,
-          },
-          items: (shipment_items.items ?? []).map((it: any) => ({
-            name: String(it?.name ?? "Item"),
-            sku: it?.sku ?? null,
-            units: Number(it?.units ?? it?.qty ?? 1) || 1,
-            selling_price: Number.isFinite(Number(it?.selling_price))
-              ? Number(it.selling_price)
-              : null,
-            weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
-          })),
-        });
-      } catch (mailErr) {
-        console.error("❌ Shipment email failed:", mailErr);
-      }
+      tasks.push(
+        sendShipmentCreatedEmailToUser({ to: user.email, ...mailPayload })
+          .catch((e) => console.error("❌ Customer shipment email failed:", e))
+      );
     }
 
+    tasks.push(
+      sendShipmentCreatedEmailToOwner({ to: "bmbstoreindia@gmail.com", ...mailPayload })
+        .catch((e) => console.error("❌ Owner shipment email failed:", e))
+    );
+
+    await Promise.all(tasks);
     /* ===============================
        10) CLEAR CART (AFTER SHIPMENT SAVED)
     ================================ */
