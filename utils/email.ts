@@ -43,8 +43,8 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
 const SMTP_SECURE = String(process.env.SMTP_SECURE || "false") === "true";
 
 // Prefer env creds; fallback to your current hardcoded values if env missing
-const SMTP_USER = process.env.SMTP_USER || "vipulsignh.1@gmail.com";
-const SMTP_PASS = process.env.SMTP_PASS || "nses ctiy nfst viro";
+const SMTP_USER = process.env.SMTP_USER || "info@bmbstore.in";
+const SMTP_PASS = process.env.SMTP_PASS || "aaql hvph kuni gfbg";
 
 const DEFAULT_FROM_NAME = process.env.SMTP_FROM_NAME || "Build My Body (BMB)";
 const DEFAULT_TO = process.env.ALERT_MAIL_TO || "info@bmbstore.in";
