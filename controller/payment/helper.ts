@@ -288,49 +288,81 @@ type ShipmentItem = {
   total_weight?: number;  // total grams for this item line (weight * units)
 };
 
-function buildShipmentItemsFromCartSnapshot(opts: {
+function buildShipmentItemsFromCartSnapshot(params: {
   cartItemsJson: any[];
   productsById: Record<string, { name: string }>;
-}) {
-  const { cartItemsJson, productsById } = opts;
+}): {
+  items: ShipmentItem[];
+  totalWeight: number; // ✅ grand total grams for all items
+} {
+  const { cartItemsJson, productsById } = params;
 
-  const items: any[] = [];
-  let totalWeight = 0;
-
-  for (const it of cartItemsJson) {
-    const productId = String(it?.product_id ?? "");
-    const units = Number(it?.quantity ?? 1) || 1;
-
-    const nameFromDb = productsById?.[productId]?.name;
-    const name = String(nameFromDb ?? it?.product_name ?? "Item");
-
-    // size can be stored differently in your cart snapshot — check common keys
-    const sizeLike =
-      it?.weight_size ?? it?.size ?? it?.weightSize ?? it?.variant ?? null;
-
-    const sku = resolveSkuFromNameAndSize(name, sizeLike);
-
-    // optional per-item weight: convert grams to kg when possible
-    const grams = parseGramsFromSize(sizeLike) ?? parseGramsFromSize(name);
-    const unitWeightKg = grams ? grams / 1000 : null;
-
-    if (unitWeightKg) totalWeight += unitWeightKg * units;
-
-    items.push({
-      name,
-      sku, // ✅ injected from map (null if unknown)
-      units,
-      selling_price: Number.isFinite(Number(it?.price)) ? Number(it.price) : null,
-      weight: unitWeightKg, // kg per unit (Delhivery commonly accepts kg)
-    });
+  if (!Array.isArray(cartItemsJson) || cartItemsJson.length === 0) {
+    return { items: [], totalWeight: 0 };
   }
+
+  const items: ShipmentItem[] = cartItemsJson
+    .map((it: any) => {
+      const pid = String(it?.product_id ?? "");
+      const product = productsById?.[pid];
+
+      const units = Number(it?.quantity ?? 1) || 1;
+      const price = Number(it?.price ?? it?.selling_price ?? 0);
+
+      // ✅ size can be stored differently in cart snapshot
+      const sizeLike =
+        it?.weight_size ?? it?.size ?? it?.weightSize ?? it?.variant ?? null;
+
+      // ✅ per unit grams from size
+      let perUnitWeight = parseSizeToGrams(sizeLike);
+
+      // ✅ ADD EXTRA PACKAGING WEIGHT LOGIC (grams)
+      if (perUnitWeight === 227) {
+        perUnitWeight = 227 + 53; // 280
+      } else if (perUnitWeight === 410) {
+        perUnitWeight = 410 + 80; // 490
+      }
+
+      const totalWeight =
+        typeof perUnitWeight === "number" && Number.isFinite(perUnitWeight)
+          ? perUnitWeight * units
+          : 0;
+
+      // ✅ item name
+      const itemNameBase = String(product?.name ?? it?.product_name ?? "Item");
+      const itemName = sizeLike ? `${itemNameBase} (${String(sizeLike)})` : itemNameBase;
+
+      // ✅ SKU from map (based on product name + size)
+      const sku = resolveSkuFromNameAndSize(itemNameBase, sizeLike) ?? null;
+
+      return {
+        name: itemName,
+        sku: sku ?? pid, // ✅ fallback to pid if sku not found
+        units,
+        qty: units,
+        selling_price: Number.isFinite(price) && price > 0 ? price : undefined,
+
+        // ✅ keep weights in grams like your original code
+        weight:
+          typeof perUnitWeight === "number" && Number.isFinite(perUnitWeight)
+            ? perUnitWeight
+            : undefined,
+        total_weight: totalWeight,
+      } as ShipmentItem;
+    })
+    .filter((x) => (Number(x.units) || 0) > 0 && !!x.name);
+
+  // ✅ GRAND TOTAL (grams)
+  const totalShipmentWeight = items.reduce(
+    (sum, item) => sum + (Number(item.total_weight) || 0),
+    0
+  );
 
   return {
     items,
-    totalWeight, // total weight in kg (based on 227/410 if available)
+    totalWeight: totalShipmentWeight,
   };
 }
-
 
 
 /* =========================================================
