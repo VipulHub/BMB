@@ -288,71 +288,49 @@ type ShipmentItem = {
   total_weight?: number;  // total grams for this item line (weight * units)
 };
 
-function buildShipmentItemsFromCartSnapshot(params: {
+function buildShipmentItemsFromCartSnapshot(opts: {
   cartItemsJson: any[];
   productsById: Record<string, { name: string }>;
-}): {
-  items: ShipmentItem[];
-  totalWeight: number; // ✅ grand total grams for all items
-} {
-  const { cartItemsJson, productsById } = params;
+}) {
+  const { cartItemsJson, productsById } = opts;
 
-  if (!Array.isArray(cartItemsJson) || cartItemsJson.length === 0) {
-    return { items: [], totalWeight: 0 };
+  const items: any[] = [];
+  let totalWeight = 0;
+
+  for (const it of cartItemsJson) {
+    const productId = String(it?.product_id ?? "");
+    const units = Number(it?.quantity ?? 1) || 1;
+
+    const nameFromDb = productsById?.[productId]?.name;
+    const name = String(nameFromDb ?? it?.product_name ?? "Item");
+
+    // size can be stored differently in your cart snapshot — check common keys
+    const sizeLike =
+      it?.weight_size ?? it?.size ?? it?.weightSize ?? it?.variant ?? null;
+
+    const sku = resolveSkuFromNameAndSize(name, sizeLike);
+
+    // optional per-item weight: convert grams to kg when possible
+    const grams = parseGramsFromSize(sizeLike) ?? parseGramsFromSize(name);
+    const unitWeightKg = grams ? grams / 1000 : null;
+
+    if (unitWeightKg) totalWeight += unitWeightKg * units;
+
+    items.push({
+      name,
+      sku, // ✅ injected from map (null if unknown)
+      units,
+      selling_price: Number.isFinite(Number(it?.price)) ? Number(it.price) : null,
+      weight: unitWeightKg, // kg per unit (Delhivery commonly accepts kg)
+    });
   }
-
-  const items: ShipmentItem[] = cartItemsJson
-    .map((it: any) => {
-      const pid = String(it?.product_id ?? "");
-      const product = productsById[pid];
-
-      const units = Number(it?.quantity ?? 1) || 1;
-      const price = Number(it?.price ?? it?.selling_price ?? 0);
-      const size = it?.size ?? null;
-
-      let perUnitWeight = parseSizeToGrams(size);
-
-      // ✅ ADD EXTRA PACKAGING WEIGHT LOGIC (after parsing grams)
-      if (perUnitWeight === 227) {
-        perUnitWeight = 227 + 53; // 280
-      } else if (perUnitWeight === 410) {
-        perUnitWeight = 410 + 80; // 490
-      }
-
-      const totalWeight =
-        typeof perUnitWeight === "number" && Number.isFinite(perUnitWeight)
-          ? perUnitWeight * units
-          : 0;
-
-      const itemNameBase = product?.name || "Item";
-      const itemName = size ? `${itemNameBase} (${String(size)})` : itemNameBase;
-
-      return {
-        name: itemName,
-        sku: pid,
-        units,
-        qty: units,
-        selling_price: Number.isFinite(price) && price > 0 ? price : undefined,
-        weight:
-          typeof perUnitWeight === "number" && Number.isFinite(perUnitWeight)
-            ? perUnitWeight
-            : undefined,
-        total_weight: totalWeight,
-      } as ShipmentItem;
-    })
-    .filter((x) => x.units > 0 && x.name);
-
-  // ✅ GRAND TOTAL (after additions)
-  const totalShipmentWeight = items.reduce(
-    (sum, item) => sum + (Number(item.total_weight) || 0),
-    0
-  );
 
   return {
     items,
-    totalWeight: totalShipmentWeight,
+    totalWeight, // total weight in kg (based on 227/410 if available)
   };
 }
+
 
 
 /* =========================================================
@@ -441,7 +419,6 @@ async function createOrder(
       (await getCartRow({ user_id: user.id })) ||
       (await getCartRow({ session_id: user.session_id ?? null })) ||
       (await getCartRow({ session_id: userId ?? null }));
-    console.log(cartRow);
 
     if (!cartRow?.id) {
       return res.status(400).json({
@@ -543,6 +520,88 @@ async function createOrder(
       - Use clean unique order ref (no ORD_ prefix)
       - Keep payment_mode internal (Prepaid/COD); createDelhiveryShipment normalizes
 ========================================================= */
+type Grams = 227 | 410;
+const SKU_MAP: Record<
+  | "pure"
+  | "original"
+  | "chocolate"
+  | "family_combo"
+  | "pure_original_combo"
+  | "pure_chocolate_combo"
+  | "original_chocolate_combo",
+  Record<Grams, string>
+> = {
+  pure: {
+    227: "BMB-PBP-PUR227",
+    410: "BMB-PBP-PUR410",
+  },
+  original: {
+    227: "BMB-PBP-ORG227",
+    410: "BMB-PBP-ORG410",
+  },
+  chocolate: {
+    // NOTE: you provided "Chocolate 227- BMB-PBP-CHO410" (looks odd but using exactly as given)
+    227: "BMB-PBP-CHO410",
+    410: "BMB-PBP-CHO410", // if you actually have a different SKU for 410 later, replace here
+  },
+  family_combo: {
+    227: "BMB-PBP-COM-TRIO227",
+    410: "BMB-PBP-COM-TRIO410",
+  },
+  pure_original_combo: {
+    227: "BMB-PBP-COM-PURORG227",
+    410: "BMB-PBP-COM-PURORG410",
+  },
+  pure_chocolate_combo: {
+    227: "BMB-PBP-COM-PURCHO227",
+    410: "BMB-PBP-COM-PURCHO410",
+  },
+  original_chocolate_combo: {
+    227: "BMB-PBP-COM-ORGCHO227",
+    410: "BMB-PBP-COM-ORGCHO410",
+  },
+};
+
+function parseGramsFromSize(input: any): Grams | null {
+  const s = String(input ?? "").toLowerCase().replace(/\s+/g, "");
+  // handles: "227gm", "227g", "227", etc.
+  const m = s.match(/(227|410)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return (n === 227 || n === 410) ? (n as Grams) : null;
+}
+
+function normalizeProductKey(productName: string): keyof typeof SKU_MAP | null {
+  const n = (productName ?? "").toLowerCase().trim();
+
+  // singles
+  if (n.includes("pure peanut butter powder")) return "pure";
+  if (n.includes("original peanut butter powder")) return "original";
+  if (n.includes("chocolate peanut butter powder")) return "chocolate";
+
+  // combos
+  if (n.includes("peanut butter family pack")) return "family_combo";
+  if (n.includes("pure & original combo")) return "pure_original_combo";
+  if (n.includes("pure & chocolate combo")) return "pure_chocolate_combo";
+  if (n.includes("chocolate & original combo")) return "original_chocolate_combo";
+
+  return null;
+}
+
+function resolveSkuFromNameAndSize(productName: string, sizeLike: any): string | null {
+  const key = normalizeProductKey(productName);
+  if (!key) return null;
+
+  // best: size field like "227gm"/"410gm"
+  let grams = parseGramsFromSize(sizeLike);
+
+  // fallback: try to detect from name if size missing
+  if (!grams) grams = parseGramsFromSize(productName);
+
+  if (!grams) return null;
+
+  return SKU_MAP[key]?.[grams] ?? null;
+}
 
 async function verifyRazorpayPayment(
   req: Request<any, any, VerifyPaymentRequest>,
