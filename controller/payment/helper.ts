@@ -820,8 +820,6 @@ async function verifyRazorpayPayment(
       address_type: "home",
     };
 
-    console.log("Shipment Payload (Delhivery):", shipmentPayload);
-    console.log("Shipment Items (stored in DB):", shipment_items);
 
     const shipment = await createDelhiveryShipment(shipmentPayload, shipment_items.totalWeight);
 
@@ -902,7 +900,7 @@ async function verifyRazorpayPayment(
     }
 
     tasks.push(
-      sendShipmentCreatedEmailToOwner({ to: "bmbstoreindia@gmail.com", ...mailPayload })
+      sendShipmentCreatedEmailToOwner({ to: "info@bmbstore.in", ...mailPayload })
         .catch((e) => console.error("❌ Owner shipment email failed:", e))
     );
 

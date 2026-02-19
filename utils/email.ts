@@ -46,8 +46,8 @@ const SMTP_SECURE = String(process.env.SMTP_SECURE || "false") === "true";
 const SMTP_USER = process.env.SMTP_USER || "vipulsignh.1@gmail.com";
 const SMTP_PASS = process.env.SMTP_PASS || "nses ctiy nfst viro";
 
-const DEFAULT_FROM_NAME = process.env.SMTP_FROM_NAME || "BMB Store";
-const DEFAULT_TO = process.env.ALERT_MAIL_TO || "bmbstoreindia@gmail.com";
+const DEFAULT_FROM_NAME = process.env.SMTP_FROM_NAME || "Build My Body (BMB)";
+const DEFAULT_TO = process.env.ALERT_MAIL_TO || "info@bmbstore.in";
 
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
