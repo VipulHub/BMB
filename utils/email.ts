@@ -252,8 +252,8 @@ function buildDelhiveryFailureMail(params: {
     <p><b>Status:</b> ${escapeHtml(isFinal ? "REJECTED (DEAD)" : "WILL RETRY")}</p>
     <p><b>Error:</b></p>
     <pre style="background:#f6f6f6; padding:12px; border-radius:8px; white-space:pre-wrap;">${escapeHtml(
-      error
-    )}</pre>
+    error
+  )}</pre>
   `;
 
   return { subject, html: baseTemplate("Delhivery Shipment Failure", body) };
@@ -359,46 +359,43 @@ function buildShipmentCreatedCustomerMail(params: {
   const itemsRows =
     Array.isArray(items) && items.length > 0
       ? items
-          .map((it) => {
-            const units = Number(it.units ?? 1) || 1;
-            const price = Number(it.selling_price ?? 0);
-            const lineTotal =
-              Number.isFinite(price) && price > 0 ? price * units : null;
+        .map((it) => {
+          const units = Number(it.units ?? 1) || 1;
+          const price = Number(it.selling_price ?? 0);
+          const lineTotal =
+            Number.isFinite(price) && price > 0 ? price * units : null;
 
-            return `
+          return `
               <tr>
                 <td style="padding:10px; border-top:1px solid #eee;">
                   <div style="font-weight:600;">${escapeHtml(it.name)}</div>
-                  ${
-                    it.sku
-                      ? `<div style="color:#777; font-size:12px;">SKU: ${escapeHtml(
-                          String(it.sku)
-                        )}</div>`
-                      : ""
-                  }
-                  ${
-                    it.weight
-                      ? `<div style="color:#777; font-size:12px;">Weight: ${escapeHtml(
-                          String(it.weight)
-                        )}g</div>`
-                      : ""
-                  }
+                  ${it.sku
+              ? `<div style="color:#777; font-size:12px;">SKU: ${escapeHtml(
+                String(it.sku)
+              )}</div>`
+              : ""
+            }
+                  ${it.weight
+              ? `<div style="color:#777; font-size:12px;">Weight: ${escapeHtml(
+                String(it.weight)
+              )}g</div>`
+              : ""
+            }
                 </td>
                 <td style="padding:10px; border-top:1px solid #eee; text-align:center;">
                   ${units}
                 </td>
                 <td style="padding:10px; border-top:1px solid #eee; text-align:right;">
-                  ${
-                    Number.isFinite(price) && price > 0 ? formatMoneyINR(price) : "-"
-                  }
+                  ${Number.isFinite(price) && price > 0 ? formatMoneyINR(price) : "-"
+            }
                 </td>
                 <td style="padding:10px; border-top:1px solid #eee; text-align:right;">
                   ${lineTotal !== null ? formatMoneyINR(lineTotal) : "-"}
                 </td>
               </tr>
             `;
-          })
-          .join("")
+        })
+        .join("")
       : `
         <tr>
           <td colspan="4" style="padding:10px; border-top:1px solid #eee; color:#777;">
@@ -427,8 +424,8 @@ function buildShipmentCreatedCustomerMail(params: {
     <h4 style="margin: 18px 0 10px 0;">Delivery Address</h4>
     <div style="background:#fff; border:1px solid #eee; padding:12px; border-radius:10px;">
       <div style="font-weight:600;">${escapeHtml(
-        address.full_name || customerName || "Customer"
-      )}</div>
+    address.full_name || customerName || "Customer"
+  )}</div>
       <div style="color:#333; margin-top:6px;">${addrLines || "-"}</div>
       <div style="color:#333; margin-top:6px;">
         Phone: ${escapeHtml(String(address.phone_number || ""))}
@@ -552,8 +549,8 @@ function buildShipmentCreatedOwnerMail(params: {
 
   const customerLine = params.customerEmail
     ? `${escapeHtml(params.customerName)}<br/><span style="font-weight:400;color:#555;">${escapeHtml(
-        params.customerEmail
-      )}</span>`
+      params.customerEmail
+    )}</span>`
     : `${escapeHtml(params.customerName)}`;
 
   const html = `
@@ -603,8 +600,8 @@ function buildShipmentCreatedOwnerMail(params: {
                     <tr>
                       <td style="padding:12px;background:#fafafa;color:#555;">Total</td>
                       <td style="padding:12px;color:#111;font-weight:800;font-size:18px;">${formatMoneyINR(
-                        params.totalAmount
-                      )}</td>
+    params.totalAmount
+  )}</td>
                     </tr>
                   </table>
 
