@@ -22,7 +22,7 @@ async function getDashboard(
     /* ================= SESSION ================= */
     const sessionId = await ensureGuestSession(req, res);
     req.headers["x-session-id"] = sessionId;
-
+   
     /* ================= CART (SAFE: pick latest if duplicates) ================= */
     const { data: carts, error: cartFetchErr } = await supabase
       .from("carts")
@@ -33,9 +33,9 @@ async function getDashboard(
       .limit(2);
 
     if (cartFetchErr) throw cartFetchErr;
-
+   
     let cart = carts?.[0] ?? null;
-
+    
     // If no cart, create one
     if (!cart) {
       const { data: newCart, error: insCartErr } = await supabase

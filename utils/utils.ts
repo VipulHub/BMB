@@ -9,69 +9,69 @@ import type { CartItem } from "../controller/cart/types.ts";
 const secret = env.JWTKEY;
 
 async function errorParser(
-    error: unknown,
-    methodName: string,
-    level: LogLevel = 'fatal',
-    code: number = 500
+  error: unknown,
+  methodName: string,
+  level: LogLevel = 'fatal',
+  code: number = 500
 ): Promise<ParsedError> {
-    const isError = error instanceof Error;
+  const isError = error instanceof Error;
 
-    const stack = isError ? error.stack ?? 'No stack trace' : 'No stack trace';
-    const message = isError ? error.message ?? 'Error' : String(error);
-    const name = isError ? error.name ?? 'Server Error' : 'UnknownError';
+  const stack = isError ? error.stack ?? 'No stack trace' : 'No stack trace';
+  const message = isError ? error.message ?? 'Error' : String(error);
+  const name = isError ? error.name ?? 'Server Error' : 'UnknownError';
 
-    const existingError = await supabase
-        .from('app_errors')
-        .select('*')
-        .eq('stack_trace', stack)
-        .eq('method_name', methodName);
+  const existingError = await supabase
+    .from('app_errors')
+    .select('*')
+    .eq('stack_trace', stack)
+    .eq('method_name', methodName);
 
-    if (!existingError) {
-        await supabase
-            .from('app_errors')
-            .insert([{
-                error_message: message,
-                method_name: methodName || errorParser.name,
-                level,
-                stack_trace: stack,
-            }]);
-    }
-
-    return {
-        name,
-        method: methodName,
-        message,
-        stack,
+  if (!existingError) {
+    await supabase
+      .from('app_errors')
+      .insert([{
+        error_message: message,
+        method_name: methodName || errorParser.name,
         level,
-        code,
-    };
+        stack_trace: stack,
+      }]);
+  }
+
+  return {
+    name,
+    method: methodName,
+    message,
+    stack,
+    level,
+    code,
+  };
 }
 
 
 async function errorGenerator(fnName: string, message: string, code: number = 500, level: LogLevel = 'fatal', method: string = '', stack: string) {
-    const error = new AppError();
-    error.message = message
-    error.name = fnName
-    error.level = level
-    error.statusCode = code
-    error.methodName = method
-    error.stack = stack
-    return error
+  const error = new AppError();
+  error.message = message
+  error.name = fnName
+  error.level = level
+  error.statusCode = code
+  error.methodName = method
+  error.stack = stack
+  return error
 }
 
 async function createToken(payload: JwtPayload): Promise<string> {
-    return jwt.sign(payload, secret, {
-        expiresIn: '24h'
-    })
+  return jwt.sign(payload, secret, {
+    expiresIn: '24h'
+  })
 }
 async function verifyToken(token: string): Promise<JwtPayload | unknown> {
-    try {
-        const payload = jwt.verify(token, secret);
-        return payload;
-    } catch (error) {
-        // Token is invalid, expired, or tampered with
-        return error;
-    }
+  try {
+    const payload = jwt.verify(token, secret);
+    return payload;
+  } catch (error) {
+    // Token is invalid, expired, or tampered with
+    return error;
+  }
 }
 const SESSION_COOKIE_NAME = "SESSION_ID";
 const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours
@@ -88,7 +88,7 @@ const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours
  *    - use cookie session
  *    - create session + user row + cart if missing
  */
- async function ensureGuestSession(req: Request, res: Response): Promise<string> {
+async function ensureGuestSession(req: Request, res: Response): Promise<string> {
   const isLocal = env.SYSTEM === "LOCAL";
 
   // 🔹 LOCAL cookie options
@@ -184,7 +184,8 @@ const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours
       .from("users")
       .select("id, session_id, jwt_expires_at")
       .eq("jwt_token", token)
-      .maybeSingle();
+      .limit(1)
+      .single();
 
     if (userErr) throw userErr;
 
@@ -287,34 +288,34 @@ const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
 
 export function normalizeCart(items: CartItem[]) {
-    const total_price = items.reduce((sum, i) => sum + (i.total_price ?? 0), 0);
-    const product_count = items.reduce((sum, i) => sum + (i.quantity ?? 0), 0);
-    return { items, total_price, product_count };
+  const total_price = items.reduce((sum, i) => sum + (i.total_price ?? 0), 0);
+  const product_count = items.reduce((sum, i) => sum + (i.quantity ?? 0), 0);
+  return { items, total_price, product_count };
 }
 
 export function emptyCart(userId?: string | null, sessionId?: string | null) {
-    return {
-        id: null,
-        created_at: null,
-        user_id: userId ?? null,
-        session_id: sessionId ?? null,
-        items: [],
-        product_count: 0,
-        total_price: 0
-    };
+  return {
+    id: null,
+    created_at: null,
+    user_id: userId ?? null,
+    session_id: sessionId ?? null,
+    items: [],
+    product_count: 0,
+    total_price: 0
+  };
 }
 
 function generateOTP(length: number = 6): string {
-    if (length <= 0) throw new Error("OTP length must be greater than 0");
-    const min = Math.pow(10, length - 1);
-    const max = Math.pow(10, length) - 1;
-    return Math.floor(min + Math.random() * (max - min + 1)).toString();
+  if (length <= 0) throw new Error("OTP length must be greater than 0");
+  const min = Math.pow(10, length - 1);
+  const max = Math.pow(10, length) - 1;
+  return Math.floor(min + Math.random() * (max - min + 1)).toString();
 }
 export {
-    errorGenerator,
-    errorParser,
-    createToken,
-    verifyToken,
-    ensureGuestSession,
-    generateOTP
+  errorGenerator,
+  errorParser,
+  createToken,
+  verifyToken,
+  ensureGuestSession,
+  generateOTP
 }
