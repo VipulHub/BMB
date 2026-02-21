@@ -17,7 +17,7 @@ import {
   getDelhiveryShipmentStatus,
   type ShipmentData,
 } from "../helper.ts";
-import { sendShipmentCreatedEmailToUser } from "../../utils/email.ts";
+import { sendShipmentCreatedEmailToOwner, sendShipmentCreatedEmailToUser } from "../../utils/email.ts";
 
 /* =========================================================
    RAZORPAY INIT
@@ -869,59 +869,46 @@ async function verifyRazorpayPayment(
     ================================ */
     if (user?.email) {
       try {
+        const mappedItems = (shipment_items.items ?? []).map((it: any) => ({
+          name: String(it?.name ?? "Item"),
+          sku: it?.sku ?? null,
+          units: Number(it?.units ?? it?.qty ?? 1) || 1,
+          selling_price: Number.isFinite(Number(it?.selling_price))
+            ? Number(it.selling_price)
+            : null,
+          weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
+        }));
+
+        const common = {
+          customerName: shipmentPayload.name,
+          orderId: String(order.order_id ?? orderUuid),
+          waybill: shipment.waybill,
+          paymentMode: shipmentPayload.payment_mode,
+          totalAmount: Number(shipmentPayload.total_amount ?? 0),
+          address: {
+            full_name: address.full_name ?? null,
+            phone_number: address.phone_number ?? null,
+            address_line1: address.address_line1 ?? null,
+            address_line2: address.address_line2 ?? null,
+            city: address.city ?? null,
+            state: address.state ?? null,
+            country: address.country ?? null,
+            postal_code: address.postal_code ?? null,
+          },
+          items: mappedItems,
+        };
+
+        // ✅ 1) send to customer
         await sendShipmentCreatedEmailToUser({
           to: user.email,
-          customerName: shipmentPayload.name,
-          orderId: String(order.order_id ?? orderUuid),
-          waybill: shipment.waybill,
-          paymentMode: shipmentPayload.payment_mode,
-          totalAmount: Number(shipmentPayload.total_amount ?? 0),
-          address: {
-            full_name: address.full_name ?? null,
-            phone_number: address.phone_number ?? null,
-            address_line1: address.address_line1 ?? null,
-            address_line2: address.address_line2 ?? null,
-            city: address.city ?? null,
-            state: address.state ?? null,
-            country: address.country ?? null,
-            postal_code: address.postal_code ?? null,
-          },
-          items: (shipment_items.items ?? []).map((it: any) => ({
-            name: String(it?.name ?? "Item"),
-            sku: it?.sku ?? null,
-            units: Number(it?.units ?? it?.qty ?? 1) || 1,
-            selling_price: Number.isFinite(Number(it?.selling_price))
-              ? Number(it.selling_price)
-              : null,
-            weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
-          })),
+          ...common,
         });
-        await sendShipmentCreatedEmailToUser({
-          to: 'bmbstoreindia@gmail.com',
-          customerName: shipmentPayload.name,
-          orderId: String(order.order_id ?? orderUuid),
-          waybill: shipment.waybill,
-          paymentMode: shipmentPayload.payment_mode,
-          totalAmount: Number(shipmentPayload.total_amount ?? 0),
-          address: {
-            full_name: address.full_name ?? null,
-            phone_number: address.phone_number ?? null,
-            address_line1: address.address_line1 ?? null,
-            address_line2: address.address_line2 ?? null,
-            city: address.city ?? null,
-            state: address.state ?? null,
-            country: address.country ?? null,
-            postal_code: address.postal_code ?? null,
-          },
-          items: (shipment_items.items ?? []).map((it: any) => ({
-            name: String(it?.name ?? "Item"),
-            sku: it?.sku ?? null,
-            units: Number(it?.units ?? it?.qty ?? 1) || 1,
-            selling_price: Number.isFinite(Number(it?.selling_price))
-              ? Number(it.selling_price)
-              : null,
-            weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
-          })),
+
+        // ✅ 2) send to owner (Reply-To = customer's email)
+        await sendShipmentCreatedEmailToOwner({
+          ownerTo: `"BMB Store Owner" <bmbstoreindia@gmail.com>`,
+          customerEmail: user.email,
+          ...common,
         });
       } catch (mailErr) {
         console.error("❌ Shipment email failed:", mailErr);

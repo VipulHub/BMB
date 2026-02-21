@@ -33,6 +33,10 @@ const SMTP_PASS = process.env.SMTP_PASS || "nses ctiy nfst viro";
 const DEFAULT_FROM_NAME = process.env.SMTP_FROM_NAME || "BMB Store System";
 const DEFAULT_TO = process.env.ALERT_MAIL_TO || "bmbstoreindia@gmail.com";
 
+// Optional friendly label for owner inbox (does NOT change Gmail "me" UI, but helps readability)
+const OWNER_TO_DISPLAY =
+  process.env.OWNER_TO_DISPLAY || `"BMB Store Owner" <${DEFAULT_TO}>`;
+
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
@@ -91,8 +95,10 @@ async function sendMail(params: SendMailParams) {
       html,
       cc,
       bcc,
-      replyTo,
+      replyTo, // ✅ THIS sets Reply-To header
       attachments,
+      // Optional: you can add custom headers if you want
+      // headers: { "X-App": "BMB" },
     });
 
     if (process.env.NODE_ENV !== "production") {
@@ -128,7 +134,7 @@ function pickDefined<T extends Record<string, any>>(obj: T) {
 async function sendEmailController(req: Request, res: Response) {
   try {
     const body = (req.body.reqbody || {}) as Partial<SendMailParams>;
-    
+
     // ✅ required fields (with default fallback for "to")
     const to = body.to ?? DEFAULT_TO;
     const subject = body.subject;
@@ -156,7 +162,6 @@ async function sendEmailController(req: Request, res: Response) {
       attachments: body.attachments,
     });
 
-    // ✅ Now TS is happy because undefined keys are removed
     const info = await sendMail(params as SendMailParams);
 
     return res.status(200).json({
@@ -219,7 +224,6 @@ function buildEmailOtpMail(params: { otp: string; email: string }) {
     html: baseTemplate("BMB Login OTP", body),
   };
 }
-
 
 /* =========================
    Specific mail builders
@@ -302,8 +306,6 @@ async function sendSuccessEmail(params: {
 
 /* =========================================================
    ✅ EMAIL TEMPLATE: Shipment Created (Customer)
-   - Shows order id, waybill, payment, address, items list
-   - Safe for exactOptionalPropertyTypes (no undefined keys)
 ========================================================= */
 
 type ShipmentMailItem = {
@@ -321,7 +323,6 @@ function formatMoneyINR(n: any) {
 }
 
 function formatDateIST(d = new Date()) {
-  // simple display; if you want exact IST formatting use Intl.DateTimeFormat
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 }
 
@@ -329,7 +330,7 @@ function buildShipmentCreatedCustomerMail(params: {
   customerName: string;
   customerEmail: string;
 
-  orderId: string; // public order_id (YYYYMMDDxxxxx)
+  orderId: string;
   waybill: string;
 
   paymentMode: "Prepaid" | "COD";
@@ -485,7 +486,7 @@ function buildShipmentCreatedCustomerMail(params: {
 }
 
 /* =========================================================
-   ✅ SEND SHIPMENT MAIL TO USER
+   ✅ SEND SHIPMENT MAIL TO USER (no replyTo needed)
 ========================================================= */
 async function sendShipmentCreatedEmailToUser(params: {
   to: string;
@@ -508,7 +509,6 @@ async function sendShipmentCreatedEmailToUser(params: {
     items: params.items,
   });
 
-  // ✅ using your generic sender
   return sendMail({
     to: params.to,
     subject,
@@ -516,11 +516,53 @@ async function sendShipmentCreatedEmailToUser(params: {
   });
 }
 
+/* =========================================================
+   ✅ SEND SHIPMENT MAIL TO OWNER
+   - replyTo is customer's email ✅
+========================================================= */
+async function sendShipmentCreatedEmailToOwner(params: {
+  ownerTo?: string; // can be raw email or "Name <email>"
+  customerEmail: string;
+  customerName: string;
+  orderId: string;
+  waybill: string;
+  paymentMode: "Prepaid" | "COD";
+  totalAmount: number;
+  address: any;
+  items: ShipmentMailItem[];
+}) {
+  const ownerTo = params.ownerTo ?? OWNER_TO_DISPLAY;
+
+  const { subject, html } = buildShipmentCreatedCustomerMail({
+    customerName: params.customerName,
+    customerEmail: params.customerEmail,
+    orderId: params.orderId,
+    waybill: params.waybill,
+    paymentMode: params.paymentMode,
+    totalAmount: params.totalAmount,
+    address: params.address,
+    items: params.items,
+  });
+
+  // Make it obvious this is the OWNER copy
+  const ownerSubject = `🛒 New Order Shipment Created | ${params.orderId} | Reply-to: ${params.customerEmail}`;
+
+  return sendMail({
+    to: ownerTo,
+    subject: ownerSubject || subject,
+    html,
+    // ✅ this is what you asked for:
+    replyTo: params.customerEmail,
+    // Optional: set a different fromName for owner copy
+    fromName: "BMB Orders",
+  });
+}
+
 export {
   transporter,
   verifyMailer,
   sendMail,
-  sendEmailController, // ✅ use this in your route
+  sendEmailController,
   escapeHtml,
   baseTemplate,
   buildDelhiveryFailureMail,
@@ -528,5 +570,6 @@ export {
   sendFailureEmail,
   sendSuccessEmail,
   buildEmailOtpMail,
-  sendShipmentCreatedEmailToUser
+  sendShipmentCreatedEmailToUser,
+  sendShipmentCreatedEmailToOwner,
 };
