@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from "uuid";
 import type { Request, Response } from "express";
 import supabase from "../../config/db.config.ts";
 import { emitter } from "../../utils/emiter.ts";
@@ -15,6 +16,7 @@ import type {
   UpdateAccountResponse,
 } from "./types.ts";
 import { buildEmailOtpMail, sendMail } from "../../utils/email.ts";
+import { env } from "../../config/envConfig.ts";
 
 /* ===============================
    GET ALL USERS
@@ -62,28 +64,363 @@ async function fetchAddress(userId: string) {
 
   return address;
 }
+const SESSION_COOKIE_NAME = "SESSION_ID";
+const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
+/**
+ * -------------------------------------------------------------
+ * ✅ Shared helpers (session + cart + user session renew)
+ * -------------------------------------------------------------
+ */
 
+function getCookieOptions(isLocal: boolean) {
+  // 🔹 LOCAL cookie options
+  const localCookieOptions = {
+    maxAge: SESSION_DURATION,
+    path: "/",
+  };
+
+  // 🔹 PROD cookie options
+  const prodCookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none" as const,
+    domain: ".bmbstore.com",
+    maxAge: SESSION_DURATION,
+    path: "/",
+  };
+
+  return isLocal ? localCookieOptions : prodCookieOptions;
+}
+
+function normalizeSessionId(v: any) {
+  let s = String(v || "").trim();
+  if (!s) return "";
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  try {
+    s = decodeURIComponent(s);
+  } catch { }
+  return s.trim();
+}
+
+async function ensureCartForSession(sid: string) {
+  const { data: cart, error: cartErr } = await supabase
+    .from("carts")
+    .select("id")
+    .eq("session_id", sid)
+    .maybeSingle();
+
+  if (cartErr) throw cartErr;
+
+  if (!cart) {
+    const { error: insErr } = await supabase.from("carts").insert({
+      session_id: sid,
+      items: [],
+      product_count: 0,
+      total_price: 0,
+    });
+    if (insErr) throw insErr;
+  }
+}
+
+async function ensureUserRowForSession(sid: string) {
+  const { data: existingUser, error: findErr } = await supabase
+    .from("users")
+    .select("id")
+    .eq("session_id", sid)
+    .maybeSingle();
+
+  if (findErr) throw findErr;
+
+  if (!existingUser) {
+    // ✅ you said you DO NOT have session_expires_at column
+    const { error: insErr } = await supabase.from("users").insert({
+      session_id: sid,
+      // created_at/updated_at should be handled by DB defaults or triggers if you have them
+    });
+
+    if (insErr) {
+      const msg = insErr.message || "";
+      const isDuplicateSession =
+        insErr.code === "23505" && msg.includes("users_session_id_key");
+      if (!isDuplicateSession) throw insErr;
+    }
+  } else {
+    // touch user so expiry can be computed from updated_at
+    await supabase
+      .from("users")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", existingUser.id);
+  }
+}
+
+/**
+ * ✅ Session expiry check (NO session_expires_at column)
+ * Uses users.updated_at only:
+ * - expired if now - updated_at > 24h
+ * - if updated_at missing/invalid => assume expired (safe)
+ */
+function isSessionExpired(userRow: any) {
+  const updatedRaw = userRow?.updated_at;
+  if (!updatedRaw) return true;
+
+  const last = new Date(updatedRaw).getTime();
+  if (!Number.isFinite(last) || last <= 0) return true;
+
+  return Date.now() - last > SESSION_DURATION;
+}
+
+/**
+ * ✅ Renew session for THIS SAME USER ONLY (no new user)
+ * - Generates a new sessionId
+ * - Updates SAME users row (replaces old session_id)
+ * - Moves the cart to new sessionId (keeps cart)
+ * - Sets cookie
+ *
+ * NOTE: since you don't have session_expires_at, renewal time = updated_at "touch"
+ */
+async function renewSessionForUser(
+  userId: string,
+  oldSid: string,
+  res: Response,
+  cookieOptions: any
+) {
+  const newSid = uuidv4();
+
+  // 1) update user session_id (same user) + touch updated_at
+  const { error: updUserErr } = await supabase
+    .from("users")
+    .update({
+      session_id: newSid,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", userId);
+
+  if (updUserErr) throw updUserErr;
+
+  // 2) move cart to new sessionId (if exists)
+  const { data: oldCart, error: oldCartErr } = await supabase
+    .from("carts")
+    .select("id")
+    .eq("session_id", oldSid)
+    .maybeSingle();
+
+  if (oldCartErr) throw oldCartErr;
+
+  if (oldCart) {
+    const { error: moveErr } = await supabase
+      .from("carts")
+      .update({ session_id: newSid })
+      .eq("id", oldCart.id);
+    if (moveErr) throw moveErr;
+  }
+
+  // 3) ensure cart exists for new session (in case old cart didn't exist)
+  await ensureCartForSession(newSid);
+
+  // 4) set cookie to renewed session
+  res.cookie(SESSION_COOKIE_NAME, newSid, cookieOptions);
+
+  return newSid;
+}
+
+/**
+ * ✅ Get user by sessionId, and renew if expired (NO new user)
+ * Rule you asked:
+ * - if session comes -> find that user
+ * - if found but expired -> replace old session with new session (same user)
+ */
+async function getUserBySessionAndRenewIfExpired(
+  sessionId: string,
+  res: Response,
+  cookieOptions: any
+): Promise<{ user: any | null; sessionId: string }> {
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return { user: null, sessionId: "" };
+
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("*")
+    .eq("session_id", sid)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (!user) return { user: null, sessionId: sid };
+
+  // ✅ if expired => renew session for SAME user (replace session_id)
+  if (isSessionExpired(user)) {
+    const renewedSid = await renewSessionForUser(user.id, sid, res, cookieOptions);
+
+    const { data: freshUser, error: freshErr } = await supabase
+      .from("users")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (freshErr) throw freshErr;
+
+    return { user: freshUser, sessionId: renewedSid };
+  }
+
+  // ✅ not expired => touch updated_at to keep session alive
+  await supabase
+    .from("users")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", user.id);
+
+  return { user, sessionId: sid };
+}
+
+/**
+ * -------------------------------------------------------------
+ * ✅ ensureGuestSession
+ * (old logic stays same, just added: session lookup + renew if expired)
+ * -------------------------------------------------------------
+ */
+export async function ensureGuestSession(req: Request, res: Response): Promise<string> {
+  const isLocal = env.SYSTEM === "LOCAL";
+  const cookieOptions = getCookieOptions(isLocal);
+
+  const extractToken = (): string | null => {
+    const auth = String(req.headers["authorization"] ?? "").trim();
+    if (auth.toLowerCase().startsWith("bearer ")) {
+      const t = auth.slice(7).trim();
+      return t || null;
+    }
+
+    const x = String(req.headers["x-auth-token"] ?? "").trim();
+    return x || null;
+  };
+
+  /* =========================================================
+     ✅ 1) TOKEN PRESENT → USE USER.session_id (NO NEW SESSION)
+  ========================================================== */
+  const token = extractToken();
+
+  if (token) {
+    const { data: user, error: userErr } = await supabase
+      .from("users")
+      .select("id, session_id, jwt_expires_at")
+      .eq("jwt_token", token)
+      .maybeSingle();
+
+    if (userErr) throw userErr;
+
+    if (user) {
+      // Optional JWT expiry check (your existing logic)
+      if (user.jwt_expires_at) {
+        const exp = new Date(user.jwt_expires_at).getTime();
+        if (Number.isFinite(exp) && exp > 0 && Date.now() > exp) {
+          // token expired -> fallthrough to cookie logic
+        } else {
+          let sid = String(user.session_id ?? "").trim();
+
+          if (!sid) {
+            sid = uuidv4();
+            const { error: updErr } = await supabase
+              .from("users")
+              .update({
+                session_id: sid,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", user.id);
+
+            if (updErr) throw updErr;
+          } else {
+            await supabase
+              .from("users")
+              .update({ updated_at: new Date().toISOString() })
+              .eq("id", user.id);
+          }
+
+          await ensureCartForSession(sid);
+          res.cookie(SESSION_COOKIE_NAME, sid, cookieOptions);
+          return sid;
+        }
+      } else {
+        // no jwt expiry field → just use it
+        let sid = String(user.session_id ?? "").trim();
+
+        if (!sid) {
+          sid = uuidv4();
+          const { error: updErr } = await supabase
+            .from("users")
+            .update({
+              session_id: sid,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", user.id);
+
+          if (updErr) throw updErr;
+        } else {
+          await supabase
+            .from("users")
+            .update({ updated_at: new Date().toISOString() })
+            .eq("id", user.id);
+        }
+
+        await ensureCartForSession(sid);
+        res.cookie(SESSION_COOKIE_NAME, sid, cookieOptions);
+        return sid;
+      }
+    }
+    // token present but user not found -> fallthrough to cookie logic
+  }
+
+  /* =========================================================
+     ✅ 2) NO TOKEN → COOKIE SESSION
+     - if user exists for that session and expired => renew (same user)
+     - else keep old behavior (create user/cart if missing)
+  ========================================================== */
+  let sessionId = normalizeSessionId(req.cookies?.[SESSION_COOKIE_NAME]);
+
+  if (!sessionId) {
+    sessionId = uuidv4();
+    res.cookie(SESSION_COOKIE_NAME, sessionId, cookieOptions);
+
+    await ensureCartForSession(sessionId);
+    await ensureUserRowForSession(sessionId);
+
+    return sessionId;
+  }
+
+  // ✅ first: find user by session and renew if expired
+  const { user: sessionUser, sessionId: maybeRenewedSid } =
+    await getUserBySessionAndRenewIfExpired(sessionId, res, cookieOptions);
+
+  sessionId = maybeRenewedSid;
+
+  // ✅ always ensure cart
+  await ensureCartForSession(sessionId);
+
+  // ✅ keep old behavior: if session exists but user row missing -> create user row
+  if (!sessionUser) {
+    await ensureUserRowForSession(sessionId);
+  }
+
+  return sessionId;
+}
 
 /* ===============================
    LOGIN → SEND OTP (EMAIL)
-   - sessionId MUST exist (no user creation)
-   - If email already exists in DB:
-       -> use that user (email owner)
-       -> move sessionId to that user (DETACH first, then ATTACH)
-       -> DO NOT update email in this branch (prevents users_email_key crash)
-   - If email does NOT exist and session exists:
-       -> update the session user’s email
-   - Avoid duplicates:
-       ✅ never create new user
-       ✅ detach sessionId before attaching to another user (unique session_id)
-       ✅ only update email when no other user owns it (unique email)
+   - old logic stays same
+   ✅ Added: if session user exists but expired -> renew session for SAME user
+   ✅ No session_expires_at usage
 ================================ */
 async function loginWithSessionId(
   req: Request<{}, {}, { sessionId?: string; email?: string }>,
   res: Response<any>
 ): Promise<Response<any>> {
   try {
+    const isLocal = env.SYSTEM === "LOCAL";
+    const cookieOptions = getCookieOptions(isLocal);
+
     const getBearerToken = () => {
       const raw = String(req.headers.authorization || "").trim();
       if (!raw) return "";
@@ -95,25 +432,10 @@ async function loginWithSessionId(
     const normalizeEmail = (v: string) => String(v || "").trim().toLowerCase();
     const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
-    const normalizeSessionId = (v: string) => {
-      let s = String(v || "").trim();
-      if (!s) return "";
-      if (
-        (s.startsWith('"') && s.endsWith('"')) ||
-        (s.startsWith("'") && s.endsWith("'"))
-      ) {
-        s = s.slice(1, -1).trim();
-      }
-      try {
-        s = decodeURIComponent(s);
-      } catch {}
-      return s.trim();
-    };
-
     // ✅ sessionId ONLY
-    const sessionId =
-      normalizeSessionId(req.body.sessionId!) ||
-      normalizeSessionId(req.cookies?.SESSION_ID);
+    let sessionId =
+      normalizeSessionId(req.body.sessionId) ||
+      normalizeSessionId(req.cookies?.[SESSION_COOKIE_NAME]);
 
     if (!sessionId) {
       return res.status(400).json({
@@ -139,18 +461,16 @@ async function loginWithSessionId(
       });
     }
 
-    // ✅ only updates token fields
     const makeJwtAndSave = async (userId: string, email: string) => {
       const token = await createToken({ userId, email });
-      const jwtExpiresAt = new Date(
-        Date.now() + 7 * 24 * 60 * 60 * 1000
-      ).toISOString();
+      const jwtExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
       const { error } = await supabase
         .from("users")
         .update({
           jwt_token: token,
           jwt_expires_at: jwtExpiresAt,
+          email,
           updated_at: new Date().toISOString(),
         })
         .eq("id", userId);
@@ -177,11 +497,7 @@ async function loginWithSessionId(
       await sendMail({ to: email, subject, html });
     };
 
-    const buildUserResponse = async (
-      userRow: any,
-      token: string,
-      message: string
-    ) => {
+    const buildUserResponse = async (userRow: any, token: string, message: string) => {
       const address = await fetchAddress(userRow.id);
 
       let fullName =
@@ -192,7 +508,7 @@ async function loginWithSessionId(
       if (!userRow.name && address?.full_name) {
         await supabase
           .from("users")
-          .update({ name: address.full_name })
+          .update({ name: address.full_name, updated_at: new Date().toISOString() })
           .eq("id", userRow.id);
         userRow.name = address.full_name;
       }
@@ -224,51 +540,55 @@ async function loginWithSessionId(
     };
 
     // -----------------------------------------------------
-    // ✅ 1) session MUST exist
+    // ✅ FIRST: find user by session_id and renew if expired
     // -----------------------------------------------------
-    const { data: userBySession, error: findSessionErr } = await supabase
+    const sessionLookup = await getUserBySessionAndRenewIfExpired(
+      sessionId,
+      res,
+      cookieOptions
+    );
+
+    let userBySession = sessionLookup.user;
+    sessionId = sessionLookup.sessionId;
+
+    // Keep cookie aligned (important if renewed)
+    res.cookie(SESSION_COOKIE_NAME, sessionId, cookieOptions);
+
+    // -----------------------------------------------------
+    // ✅ Find user by email (existing email user)
+    // -----------------------------------------------------
+    const { data: userByEmail, error: findEmailErr } = await supabase
       .from("users")
       .select("*")
-      .eq("session_id", sessionId)
+      .eq("email", emailFromBody)
       .maybeSingle();
-
-    if (findSessionErr) throw findSessionErr;
-
-    if (!userBySession) {
-      return res.status(404).json({
-        errorCode: "USER_NOT_FOUND",
-        message: "No user found for this sessionId",
-      });
-    }
-
-    // -----------------------------------------------------
-    // ✅ 2) Find email owner (case-insensitive) safely
-    //    - limit(2) avoids maybeSingle crash if you already have duplicates by case
-    // -----------------------------------------------------
-    const { data: emailMatches, error: findEmailErr } = await supabase
-      .from("users")
-      .select("*")
-      .ilike("email", emailFromBody)
-      .limit(2);
 
     if (findEmailErr) throw findEmailErr;
 
-    const emailOwner =
-      (emailMatches || []).find(
-        (u) => normalizeEmail(u.email || "") === emailFromBody
-      ) ||
-      (emailMatches || [])[0] ||
-      null;
-
     // -----------------------------------------------------
-    // ✅ 3) Decide target user without duplicates
+    // ✅ Decide target user (old logic preserved)
     // -----------------------------------------------------
-    let user: any = userBySession;
+    let user: any = null;
 
-    if (emailOwner) {
-      // Email exists -> use emailOwner
-      if (emailOwner.id !== userBySession.id) {
-        // A) detach session from current session user FIRST (unique session_id)
+    if (userByEmail) {
+      // ✅ Email exists -> use that user and attach this sessionId
+      user = userByEmail;
+
+      if (String(user.session_id || "").trim() !== sessionId) {
+        const { error: attachSessionErr } = await supabase
+          .from("users")
+          .update({
+            session_id: sessionId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", user.id);
+
+        if (attachSessionErr) throw attachSessionErr;
+        user.session_id = sessionId;
+      }
+
+      // Detach session from old session-user (avoid 1 session -> 2 users)
+      if (userBySession && userBySession.id !== userByEmail.id) {
         const { error: detachErr } = await supabase
           .from("users")
           .update({
@@ -278,46 +598,53 @@ async function loginWithSessionId(
           .eq("id", userBySession.id);
 
         if (detachErr) throw detachErr;
-
-        // B) attach session to email owner SECOND
-        // ✅ DO NOT update email here (prevents users_email_key)
-        const { error: attachErr } = await supabase
-          .from("users")
-          .update({
-            session_id: sessionId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", emailOwner.id);
-
-        if (attachErr) throw attachErr;
-
-        user = { ...emailOwner, session_id: sessionId };
-      } else {
-        // same user already owns session + email
-        user = userBySession;
       }
     } else {
-      // Email does NOT exist -> update session user's email
-      if (normalizeEmail(userBySession.email || "") !== emailFromBody) {
+      // ✅ Email not found -> must have session user to update
+      if (!userBySession) {
+        return res.status(404).json({
+          errorCode: "USER_NOT_FOUND",
+          message: "No user found for this sessionId (and email does not exist)",
+        });
+      }
+
+      user = userBySession;
+
+      // Update email if changed
+      const emailChanged = normalizeEmail(user.email || "") !== emailFromBody;
+      if (emailChanged) {
         const { error: updEmailErr } = await supabase
           .from("users")
           .update({
             email: emailFromBody,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", userBySession.id);
+          .eq("id", user.id);
 
         if (updEmailErr) throw updEmailErr;
+        user.email = emailFromBody;
+      }
 
-        user = { ...userBySession, email: emailFromBody };
+      // Ensure session_id is synced (especially if it got renewed)
+      if (String(user.session_id || "").trim() !== sessionId) {
+        const { error: syncSidErr } = await supabase
+          .from("users")
+          .update({
+            session_id: sessionId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", user.id);
+
+        if (syncSidErr) throw syncSidErr;
+        user.session_id = sessionId;
       }
     }
 
     // -----------------------------------------------------
-    // ✅ 4) Token priority: Bearer > DB (if not expired) > create
+    // ✅ Token priority: Bearer > DB (if not expired) > create
     // -----------------------------------------------------
     const dbToken = String(user.jwt_token || "").trim();
-    const isExpired = user.jwt_expires_at
+    const jwtExpired = user.jwt_expires_at
       ? new Date(user.jwt_expires_at).getTime() <= Date.now()
       : true;
 
@@ -326,16 +653,17 @@ async function loginWithSessionId(
     if (bearerToken) {
       finalToken = bearerToken;
 
-      if (!dbToken || isExpired || dbToken !== bearerToken) {
-        const jwtExpiresAt = new Date(
-          Date.now() + 7 * 24 * 60 * 60 * 1000
-        ).toISOString();
+      // keep DB synced with bearer token
+      if (!dbToken || jwtExpired || dbToken !== bearerToken) {
+        const jwtExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
         const { error: updErr } = await supabase
           .from("users")
           .update({
             jwt_token: bearerToken,
             jwt_expires_at: jwtExpiresAt,
+            email: emailFromBody,
+            session_id: sessionId,
             updated_at: new Date().toISOString(),
           })
           .eq("id", user.id);
@@ -344,34 +672,26 @@ async function loginWithSessionId(
 
         user.jwt_token = bearerToken;
         user.jwt_expires_at = jwtExpiresAt;
+        user.email = emailFromBody;
+        user.session_id = sessionId;
       }
-    } else if (dbToken && !isExpired) {
+    } else if (dbToken && !jwtExpired) {
       finalToken = dbToken;
     } else {
-      const { token, jwtExpiresAt } = await makeJwtAndSave(
-        user.id,
-        String(user.email || "").trim()
-      );
+      const { token, jwtExpiresAt } = await makeJwtAndSave(user.id, emailFromBody);
       finalToken = token;
 
       user.jwt_token = token;
       user.jwt_expires_at = jwtExpiresAt;
+      user.email = emailFromBody;
     }
 
     // -----------------------------------------------------
-    // ✅ 5) Always send OTP to latest email (from DB user)
+    // ✅ Always send OTP
     // -----------------------------------------------------
-    const finalEmail = String(user.email || "").trim();
+    await saveAndSendOtp(user.id, emailFromBody);
 
-    if (!finalEmail) {
-      return res.status(400).json({
-        errorCode: "INVALID_REQUEST",
-        message: "User email is missing for OTP",
-      });
-    }
-
-    await saveAndSendOtp(user.id, finalEmail);
-
+    // ✅ Return full response with address etc (same as your old logic)
     return buildUserResponse(user, finalToken, "OTP sent successfully");
   } catch (e: any) {
     console.error(e);
@@ -381,6 +701,8 @@ async function loginWithSessionId(
     });
   }
 }
+
+
 
 
 /* ===============================

@@ -247,9 +247,9 @@ async function checkToken(
       return s.trim();
     };
 
-    const sessionId = normalizeSessionId(request.cookies?.SESSION_ID);
+    const sessionId = normalizeSessionId(request.cookies?.["SESSION_ID"]);
 
-    console.log(sessionId, "sessionId123");
+    console.log(sessionId, "sessionId");
     console.log(bearerToken, "bearerToken");
 
     // ✅ PRIORITY 1: SESSION AUTH (cookie)

@@ -22,23 +22,16 @@ async function getDashboard(
     /* ================= SESSION ================= */
     const sessionId = await ensureGuestSession(req, res);
     req.headers["x-session-id"] = sessionId;
-   
-    /* ================= CART (SAFE: pick latest if duplicates) ================= */
-    const { data: carts, error: cartFetchErr } = await supabase
+
+    /* ================= CART ================= */
+    let { data: cart } = await supabase
       .from("carts")
       .select("*")
       .eq("session_id", sessionId)
-      .order("updated_at", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(2);
+      .maybeSingle();
 
-    if (cartFetchErr) throw cartFetchErr;
-   
-    let cart = carts?.[0] ?? null;
-    
-    // If no cart, create one
     if (!cart) {
-      const { data: newCart, error: insCartErr } = await supabase
+      const { data: newCart } = await supabase
         .from("carts")
         .insert({
           session_id: sessionId,
@@ -49,15 +42,7 @@ async function getDashboard(
         .select("*")
         .single();
 
-      if (insCartErr) throw insCartErr;
       cart = newCart!;
-    }
-
-    // Optional cleanup: if duplicates exist, delete extras
-    if (carts && carts.length > 1) {
-      const extraIds = carts.slice(1).map(c => c.id);
-      // best-effort cleanup; don't block response if it fails
-      await supabase.from("carts").delete().in("id", extraIds);
     }
 
     const rawItems = Array.isArray(cart.items) ? cart.items : [];
@@ -84,7 +69,7 @@ async function getDashboard(
       product_count !== cart.product_count ||
       total_price !== cart.total_price
     ) {
-      const { data: updatedCart, error: updCartErr } = await supabase
+      const { data: updatedCart } = await supabase
         .from("carts")
         .update({
           items: recalculatedItems,
@@ -96,24 +81,23 @@ async function getDashboard(
         .select("*")
         .single();
 
-      if (updCartErr) throw updCartErr;
       cart = updatedCart!;
     }
 
     /* ================= PRODUCTS ================= */
-    const { data: rawProducts, error: prodErr } = await supabase
+    const { data: rawProducts } = await supabase
       .from("products")
       .select("*")
       .order("priority", { ascending: false });
-
-    if (prodErr) throw prodErr;
 
     /* ================= PRODUCT OFFERS ================= */
     const { data: rawOffers, error: offersError } = await supabase
       .from("product_offers")
       .select("id, product_id, min_quantity, discount_percent");
 
-    if (offersError) throw offersError;
+    if (offersError) {
+      throw offersError;
+    }
 
     const offersByProduct = new Map<string, ProductOffer[]>();
 
@@ -130,6 +114,7 @@ async function getDashboard(
       offersByProduct.set(o.product_id, arr);
     });
 
+    // optional: sort offers by quantity (Buy 1, Buy 2, ...)
     offersByProduct.forEach((arr) =>
       arr.sort((a, b) => a.min_quantity - b.min_quantity)
     );
@@ -152,6 +137,8 @@ async function getDashboard(
         Object.values(p.discounted_prices ?? {})[0] ??
         Object.values(p.size_prices ?? {})[0] ??
         0,
+
+      /* ✅ attach offers */
       offers: offersByProduct.get(p.id) ?? []
     }));
 
@@ -182,7 +169,7 @@ async function getDashboard(
       total_price
     };
 
-    /* ================= NEW CART ================= */
+    /* ================= NEW CART (v2, weight/size-aware) ================= */
     const apiCart: Cart = {
       id: cart.id,
       created_at: cart.created_at,
@@ -202,13 +189,11 @@ async function getDashboard(
     };
 
     /* ================= BLOGS ================= */
-    const { data: rawBlogs, error: blogErr } = await supabase
+    const { data: rawBlogs } = await supabase
       .from("blogs")
       .select(
         "id, created_at, user_id, header, paragraph1, image_urls,subheader1,subheader2,paragraph2"
       );
-
-    if (blogErr) throw blogErr;
 
     const blogs: Blog[] = (rawBlogs ?? []).map((b: any) => ({
       id: b.id,
@@ -225,16 +210,16 @@ async function getDashboard(
     /* ================= COUPONS ================= */
     const today = new Date().toISOString().split("T")[0];
 
-    const { data: rawCoupons, error: couponErr } = await supabase
+    const { data: rawCoupons } = await supabase
       .from("discount_coupons")
       .select("*")
       .eq("is_active", true)
       .lte("valid_from", today)
       .gte("valid_to", today);
 
-    if (couponErr) throw couponErr;
-
-    const cartProductIds = new Set(legacyCart.items.map(i => i.product_id));
+    const cartProductIds = new Set(
+      legacyCart.items.map(i => i.product_id)
+    );
 
     const coupons: Coupon[] = (rawCoupons ?? []).map((c: any) => ({
       id: c.id,
@@ -250,13 +235,14 @@ async function getDashboard(
           legacyCart.items.some(i => i.product_type === c.product_type))
     }));
 
+    /* ================= FINAL RESPONSE ================= */
     return res.status(200).json({
       errorCode: "NO_ERROR",
       data: {
         products,
         blogs,
-        cart: legacyCart,
-        cart_v2: apiCart,
+        cart: legacyCart, // old
+        cart_v2: apiCart, // new, enriched with product_name, image, type
         cartCount: product_count,
         coupons
       },

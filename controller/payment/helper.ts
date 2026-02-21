@@ -17,7 +17,7 @@ import {
   getDelhiveryShipmentStatus,
   type ShipmentData,
 } from "../helper.ts";
-import { sendShipmentCreatedEmailToOwner, sendShipmentCreatedEmailToUser } from "../../utils/email.ts";
+import { sendShipmentCreatedEmailToUser } from "../../utils/email.ts";
 
 /* =========================================================
    RAZORPAY INIT
@@ -304,19 +304,15 @@ function buildShipmentItemsFromCartSnapshot(params: {
   const items: ShipmentItem[] = cartItemsJson
     .map((it: any) => {
       const pid = String(it?.product_id ?? "");
-      const product = productsById?.[pid];
+      const product = productsById[pid];
 
       const units = Number(it?.quantity ?? 1) || 1;
       const price = Number(it?.price ?? it?.selling_price ?? 0);
+      const size = it?.size ?? null;
 
-      // ✅ size can be stored differently in cart snapshot
-      const sizeLike =
-        it?.weight_size ?? it?.size ?? it?.weightSize ?? it?.variant ?? null;
+      let perUnitWeight = parseSizeToGrams(size);
 
-      // ✅ per unit grams from size
-      let perUnitWeight = parseSizeToGrams(sizeLike);
-
-      // ✅ ADD EXTRA PACKAGING WEIGHT LOGIC (grams)
+      // ✅ ADD EXTRA PACKAGING WEIGHT LOGIC (after parsing grams)
       if (perUnitWeight === 227) {
         perUnitWeight = 227 + 53; // 280
       } else if (perUnitWeight === 410) {
@@ -328,21 +324,15 @@ function buildShipmentItemsFromCartSnapshot(params: {
           ? perUnitWeight * units
           : 0;
 
-      // ✅ item name
-      const itemNameBase = String(product?.name ?? it?.product_name ?? "Item");
-      const itemName = sizeLike ? `${itemNameBase} (${String(sizeLike)})` : itemNameBase;
-
-      // ✅ SKU from map (based on product name + size)
-      const sku = resolveSkuFromNameAndSize(itemNameBase, sizeLike) ?? null;
+      const itemNameBase = product?.name || "Item";
+      const itemName = size ? `${itemNameBase} (${String(size)})` : itemNameBase;
 
       return {
         name: itemName,
-        sku: sku ?? pid, // ✅ fallback to pid if sku not found
+        sku: pid,
         units,
         qty: units,
         selling_price: Number.isFinite(price) && price > 0 ? price : undefined,
-
-        // ✅ keep weights in grams like your original code
         weight:
           typeof perUnitWeight === "number" && Number.isFinite(perUnitWeight)
             ? perUnitWeight
@@ -350,9 +340,9 @@ function buildShipmentItemsFromCartSnapshot(params: {
         total_weight: totalWeight,
       } as ShipmentItem;
     })
-    .filter((x) => (Number(x.units) || 0) > 0 && !!x.name);
+    .filter((x) => x.units > 0 && x.name);
 
-  // ✅ GRAND TOTAL (grams)
+  // ✅ GRAND TOTAL (after additions)
   const totalShipmentWeight = items.reduce(
     (sum, item) => sum + (Number(item.total_weight) || 0),
     0
@@ -386,6 +376,7 @@ async function createOrder(
         error: "User does not exist",
       });
     }
+    console.log(user);
 
     const { error: updUserErr } = await supabase
       .from("users")
@@ -451,6 +442,7 @@ async function createOrder(
       (await getCartRow({ user_id: user.id })) ||
       (await getCartRow({ session_id: user.session_id ?? null })) ||
       (await getCartRow({ session_id: userId ?? null }));
+    console.log(cartRow);
 
     if (!cartRow?.id) {
       return res.status(400).json({
@@ -552,88 +544,6 @@ async function createOrder(
       - Use clean unique order ref (no ORD_ prefix)
       - Keep payment_mode internal (Prepaid/COD); createDelhiveryShipment normalizes
 ========================================================= */
-type Grams = 227 | 410;
-const SKU_MAP: Record<
-  | "pure"
-  | "original"
-  | "chocolate"
-  | "family_combo"
-  | "pure_original_combo"
-  | "pure_chocolate_combo"
-  | "original_chocolate_combo",
-  Record<Grams, string>
-> = {
-  pure: {
-    227: "BMB-PBP-PUR227",
-    410: "BMB-PBP-PUR410",
-  },
-  original: {
-    227: "BMB-PBP-ORG227",
-    410: "BMB-PBP-ORG410",
-  },
-  chocolate: {
-    // NOTE: you provided "Chocolate 227- BMB-PBP-CHO410" (looks odd but using exactly as given)
-    227: "BMB-PBP-CHO410",
-    410: "BMB-PBP-CHO410", // if you actually have a different SKU for 410 later, replace here
-  },
-  family_combo: {
-    227: "BMB-PBP-COM-TRIO227",
-    410: "BMB-PBP-COM-TRIO410",
-  },
-  pure_original_combo: {
-    227: "BMB-PBP-COM-PURORG227",
-    410: "BMB-PBP-COM-PURORG410",
-  },
-  pure_chocolate_combo: {
-    227: "BMB-PBP-COM-PURCHO227",
-    410: "BMB-PBP-COM-PURCHO410",
-  },
-  original_chocolate_combo: {
-    227: "BMB-PBP-COM-ORGCHO227",
-    410: "BMB-PBP-COM-ORGCHO410",
-  },
-};
-
-function parseGramsFromSize(input: any): Grams | null {
-  const s = String(input ?? "").toLowerCase().replace(/\s+/g, "");
-  // handles: "227gm", "227g", "227", etc.
-  const m = s.match(/(227|410)/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return (n === 227 || n === 410) ? (n as Grams) : null;
-}
-
-function normalizeProductKey(productName: string): keyof typeof SKU_MAP | null {
-  const n = (productName ?? "").toLowerCase().trim();
-
-  // singles
-  if (n.includes("pure peanut butter powder")) return "pure";
-  if (n.includes("original peanut butter powder")) return "original";
-  if (n.includes("chocolate peanut butter powder")) return "chocolate";
-
-  // combos
-  if (n.includes("peanut butter family pack")) return "family_combo";
-  if (n.includes("pure & original combo")) return "pure_original_combo";
-  if (n.includes("pure & chocolate combo")) return "pure_chocolate_combo";
-  if (n.includes("chocolate & original combo")) return "original_chocolate_combo";
-
-  return null;
-}
-
-function resolveSkuFromNameAndSize(productName: string, sizeLike: any): string | null {
-  const key = normalizeProductKey(productName);
-  if (!key) return null;
-
-  // best: size field like "227gm"/"410gm"
-  let grams = parseGramsFromSize(sizeLike);
-
-  // fallback: try to detect from name if size missing
-  if (!grams) grams = parseGramsFromSize(productName);
-
-  if (!grams) return null;
-
-  return SKU_MAP[key]?.[grams] ?? null;
-}
 
 async function verifyRazorpayPayment(
   req: Request<any, any, VerifyPaymentRequest>,
@@ -911,6 +821,8 @@ async function verifyRazorpayPayment(
       address_type: "home",
     };
 
+    console.log("Shipment Payload (Delhivery):", shipmentPayload);
+    console.log("Shipment Items (stored in DB):", shipment_items);
 
     const shipment = await createDelhiveryShipment(shipmentPayload, shipment_items.totalWeight);
 
@@ -952,50 +864,70 @@ async function verifyRazorpayPayment(
       return res.status(500).json({ errorCode: "DB_ERROR", error: shipSaveErr.message });
     }
 
-    const mailPayload = {
-      customerName: shipmentPayload.name,
-      orderId: String(order.order_id ?? orderUuid),
-      waybill: shipment.waybill,
-      paymentMode: shipmentPayload.payment_mode as "Prepaid" | "COD",
-      totalAmount: Number(shipmentPayload.total_amount ?? 0),
-      address: {
-        full_name: address.full_name ?? null,
-        phone_number: address.phone_number ?? null,
-        address_line1: address.address_line1 ?? null,
-        address_line2: address.address_line2 ?? null,
-        city: address.city ?? null,
-        state: address.state ?? null,
-        country: address.country ?? null,
-        postal_code: address.postal_code ?? null,
-      },
-      items: (shipment_items.items ?? []).map((it: any) => ({
-        name: String(it?.name ?? "Item"),
-        sku: it?.sku ?? null,
-        units: Number(it?.units ?? it?.qty ?? 1) || 1,
-        selling_price: Number.isFinite(Number(it?.selling_price))
-          ? Number(it.selling_price)
-          : null,
-        weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
-      })),
-    };
     /* ===============================
        9.5) SEND SHIPMENT EMAIL TO USER (BEST EFFORT)
     ================================ */
-    const tasks: Promise<any>[] = [];
-
     if (user?.email) {
-      tasks.push(
-        sendShipmentCreatedEmailToUser({ to: user.email, ...mailPayload })
-          .catch((e) => console.error("❌ Customer shipment email failed:", e))
-      );
+      try {
+        await sendShipmentCreatedEmailToUser({
+          to: user.email,
+          customerName: shipmentPayload.name,
+          orderId: String(order.order_id ?? orderUuid),
+          waybill: shipment.waybill,
+          paymentMode: shipmentPayload.payment_mode,
+          totalAmount: Number(shipmentPayload.total_amount ?? 0),
+          address: {
+            full_name: address.full_name ?? null,
+            phone_number: address.phone_number ?? null,
+            address_line1: address.address_line1 ?? null,
+            address_line2: address.address_line2 ?? null,
+            city: address.city ?? null,
+            state: address.state ?? null,
+            country: address.country ?? null,
+            postal_code: address.postal_code ?? null,
+          },
+          items: (shipment_items.items ?? []).map((it: any) => ({
+            name: String(it?.name ?? "Item"),
+            sku: it?.sku ?? null,
+            units: Number(it?.units ?? it?.qty ?? 1) || 1,
+            selling_price: Number.isFinite(Number(it?.selling_price))
+              ? Number(it.selling_price)
+              : null,
+            weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
+          })),
+        });
+        await sendShipmentCreatedEmailToUser({
+          to: 'bmbstoreindia@gmail.com',
+          customerName: shipmentPayload.name,
+          orderId: String(order.order_id ?? orderUuid),
+          waybill: shipment.waybill,
+          paymentMode: shipmentPayload.payment_mode,
+          totalAmount: Number(shipmentPayload.total_amount ?? 0),
+          address: {
+            full_name: address.full_name ?? null,
+            phone_number: address.phone_number ?? null,
+            address_line1: address.address_line1 ?? null,
+            address_line2: address.address_line2 ?? null,
+            city: address.city ?? null,
+            state: address.state ?? null,
+            country: address.country ?? null,
+            postal_code: address.postal_code ?? null,
+          },
+          items: (shipment_items.items ?? []).map((it: any) => ({
+            name: String(it?.name ?? "Item"),
+            sku: it?.sku ?? null,
+            units: Number(it?.units ?? it?.qty ?? 1) || 1,
+            selling_price: Number.isFinite(Number(it?.selling_price))
+              ? Number(it.selling_price)
+              : null,
+            weight: Number.isFinite(Number(it?.weight)) ? Number(it.weight) : null,
+          })),
+        });
+      } catch (mailErr) {
+        console.error("❌ Shipment email failed:", mailErr);
+      }
     }
 
-    tasks.push(
-      sendShipmentCreatedEmailToOwner({ to: "info@bmbstore.in", ...mailPayload })
-        .catch((e) => console.error("❌ Owner shipment email failed:", e))
-    );
-
-    await Promise.all(tasks);
     /* ===============================
        10) CLEAR CART (AFTER SHIPMENT SAVED)
     ================================ */
