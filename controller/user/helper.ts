@@ -64,6 +64,7 @@ async function fetchAddress(userId: string) {
 
   return address;
 }
+
 const SESSION_COOKIE_NAME = "SESSION_ID";
 const SESSION_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -104,8 +105,28 @@ function normalizeSessionId(v: any) {
   }
   try {
     s = decodeURIComponent(s);
-  } catch { }
+  } catch {}
   return s.trim();
+}
+
+/**
+ * ✅ IMPORTANT FIX for your error:
+ * users.session_id has UNIQUE constraint (users_session_id_key)
+ * So BEFORE assigning a sessionId to a user, we MUST detach it from any other user.
+ */
+async function detachSessionFromOtherUsers(sessionId: string, keepUserId?: string) {
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return;
+
+  let q = supabase
+    .from("users")
+    .update({ session_id: null, updated_at: new Date().toISOString() })
+    .eq("session_id", sid);
+
+  if (keepUserId) q = q.neq("id", keepUserId);
+
+  const { error } = await q;
+  if (error) throw error;
 }
 
 async function ensureCartForSession(sid: string) {
@@ -148,6 +169,7 @@ async function ensureUserRowForSession(sid: string) {
       const msg = insErr.message || "";
       const isDuplicateSession =
         insErr.code === "23505" && msg.includes("users_session_id_key");
+      // if it’s a unique session collision, don't crash; someone else got it first.
       if (!isDuplicateSession) throw insErr;
     }
   } else {
@@ -182,7 +204,7 @@ function isSessionExpired(userRow: any) {
  * - Moves the cart to new sessionId (keeps cart)
  * - Sets cookie
  *
- * NOTE: since you don't have session_expires_at, renewal time = updated_at "touch"
+ * IMPORTANT: handle UNIQUE collision safely (very rare but possible)
  */
 async function renewSessionForUser(
   userId: string,
@@ -190,18 +212,38 @@ async function renewSessionForUser(
   res: Response,
   cookieOptions: any
 ) {
-  const newSid = uuidv4();
+  // retry few times if UUID collides with existing session_id (unique constraint)
+  let newSid = "";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = uuidv4();
 
-  // 1) update user session_id (same user) + touch updated_at
-  const { error: updUserErr } = await supabase
-    .from("users")
-    .update({
-      session_id: newSid,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", userId);
+    // just in case: detach candidate from others (if collision exists)
+    await detachSessionFromOtherUsers(candidate, userId);
 
-  if (updUserErr) throw updUserErr;
+    const { error: updUserErr } = await supabase
+      .from("users")
+      .update({
+        session_id: candidate,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", userId);
+
+    if (!updUserErr) {
+      newSid = candidate;
+      break;
+    }
+
+    const msg = updUserErr.message || "";
+    const isDuplicateSession =
+      updUserErr.code === "23505" && msg.includes("users_session_id_key");
+
+    if (!isDuplicateSession) throw updUserErr;
+    // else retry with new uuid
+  }
+
+  if (!newSid) {
+    throw new Error("Failed to renew session (unique constraint collision)");
+  }
 
   // 2) move cart to new sessionId (if exists)
   const { data: oldCart, error: oldCartErr } = await supabase
@@ -323,6 +365,10 @@ export async function ensureGuestSession(req: Request, res: Response): Promise<s
 
           if (!sid) {
             sid = uuidv4();
+
+            // ✅ FIX: ensure unique by detaching from any other user first
+            await detachSessionFromOtherUsers(sid, user.id);
+
             const { error: updErr } = await supabase
               .from("users")
               .update({
@@ -349,6 +395,10 @@ export async function ensureGuestSession(req: Request, res: Response): Promise<s
 
         if (!sid) {
           sid = uuidv4();
+
+          // ✅ FIX: ensure unique by detaching from any other user first
+          await detachSessionFromOtherUsers(sid, user.id);
+
           const { error: updErr } = await supabase
             .from("users")
             .update({
@@ -413,7 +463,7 @@ export async function ensureGuestSession(req: Request, res: Response): Promise<s
    ✅ Added: if session user exists but expired -> renew session for SAME user
    ✅ No session_expires_at usage
 ================================ */
-async function loginWithSessionId(
+ async function loginWithSessionId(
   req: Request<{}, {}, { sessionId?: string; email?: string }>,
   res: Response<any>
 ): Promise<Response<any>> {
@@ -463,7 +513,9 @@ async function loginWithSessionId(
 
     const makeJwtAndSave = async (userId: string, email: string) => {
       const token = await createToken({ userId, email });
-      const jwtExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const jwtExpiresAt = new Date(
+        Date.now() + 7 * 24 * 60 * 60 * 1000
+      ).toISOString();
 
       const { error } = await supabase
         .from("users")
@@ -574,6 +626,16 @@ async function loginWithSessionId(
       // ✅ Email exists -> use that user and attach this sessionId
       user = userByEmail;
 
+      /**
+       * ✅ FIX FOR YOUR ERROR:
+       * Detach this sessionId from ANY other user FIRST,
+       * then attach it to the email user.
+       *
+       * Previously you attached first and detached later,
+       * which triggers unique constraint users_session_id_key.
+       */
+      await detachSessionFromOtherUsers(sessionId, userByEmail.id);
+
       if (String(user.session_id || "").trim() !== sessionId) {
         const { error: attachSessionErr } = await supabase
           .from("users")
@@ -587,17 +649,9 @@ async function loginWithSessionId(
         user.session_id = sessionId;
       }
 
-      // Detach session from old session-user (avoid 1 session -> 2 users)
+      // keep local variable consistent: if session user was someone else, it is now detached
       if (userBySession && userBySession.id !== userByEmail.id) {
-        const { error: detachErr } = await supabase
-          .from("users")
-          .update({
-            session_id: null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", userBySession.id);
-
-        if (detachErr) throw detachErr;
+        userBySession = null;
       }
     } else {
       // ✅ Email not found -> must have session user to update
@@ -626,6 +680,9 @@ async function loginWithSessionId(
       }
 
       // Ensure session_id is synced (especially if it got renewed)
+      // (also detach from others just to be safe)
+      await detachSessionFromOtherUsers(sessionId, user.id);
+
       if (String(user.session_id || "").trim() !== sessionId) {
         const { error: syncSidErr } = await supabase
           .from("users")
@@ -655,7 +712,9 @@ async function loginWithSessionId(
 
       // keep DB synced with bearer token
       if (!dbToken || jwtExpired || dbToken !== bearerToken) {
-        const jwtExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        const jwtExpiresAt = new Date(
+          Date.now() + 7 * 24 * 60 * 60 * 1000
+        ).toISOString();
 
         const { error: updErr } = await supabase
           .from("users")
@@ -701,9 +760,6 @@ async function loginWithSessionId(
     });
   }
 }
-
-
-
 
 /* ===============================
    OTP AUTH / VERIFY OTP

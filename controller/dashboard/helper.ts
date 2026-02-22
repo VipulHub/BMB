@@ -214,8 +214,6 @@ async function getDashboard(
       .from("discount_coupons")
       .select("*")
       .eq("is_active", true)
-      .lte("valid_from", today)
-      .gte("valid_to", today);
 
     const cartProductIds = new Set(
       legacyCart.items.map(i => i.product_id)

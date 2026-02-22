@@ -537,15 +537,38 @@ create table if not exists discount_coupons (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz default now(),
   created_by uuid references users(id) on delete set null,
+
   coupon_code text unique not null,
   title text,
   description text,
+
+  -- ✅ coupon handling type
+  coupon_type text not null default 'ORDER_TOTAL'
+  check (coupon_type in ('ORDER_TOTAL', 'PACK_QTY')),
+
+  -- ✅ discount fields (you can use either percent or flat amount)
   discount_percent numeric(5,2),
+  discount_amount numeric(12,2),              -- ✅ for ₹100/₹250/₹400
+
+  -- ✅ condition columns (the "rules")
+  min_order_amount numeric(12,2),             -- ✅ for BMB100/BMB250
+  min_pack_qty int,                           -- ✅ for POWER5
+
   valid_from date,
   valid_to date,
+
+  -- optional targeting (keep your existing logic)
   product_id uuid references products(id) on delete cascade,
   product_type text,
-  is_active boolean default true
+
+  is_active boolean default true,
+
+  -- ✅ sanity: ensure required condition exists per type
+  constraint discount_coupon_condition_chk check (
+    (coupon_type = 'ORDER_TOTAL' and min_order_amount is not null and min_pack_qty is null)
+    or
+    (coupon_type = 'PACK_QTY' and min_pack_qty is not null and min_order_amount is null)
+  )
 );
 
 /* =====================================================
